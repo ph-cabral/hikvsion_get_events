@@ -1,5 +1,6 @@
 services:
   hikvision-api:
+    networks: [ai-net]
     build: .
     container_name: hikvision-api
     restart: unless-stopped
@@ -11,7 +12,6 @@ services:
     # Si está en el host de la VM, ajustá DATABASE_URL con host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-# networks:
-#   ever_default:
-#     external: true
+networks:
+  ai-net:
+    external: true
