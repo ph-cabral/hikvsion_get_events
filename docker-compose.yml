@@ -1,0 +1,17 @@
+services:
+  hikvision-api:
+    build: .
+    container_name: hikvision-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8088:8000"
+    # Si el postgres de ever corre en otro compose, usá su network:
+    # networks: [ever_default]
+    # Si está en el host de la VM, ajustá DATABASE_URL con host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+# networks:
+#   ever_default:
+#     external: true
