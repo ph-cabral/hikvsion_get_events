@@ -137,7 +137,8 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
 
     try:
         # users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
-        users, eventos_raw = _events_from_db(start_utc, end_utc)
+        # users, eventos_raw = _events_from_db(start_utc, end_utc)
+        users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
         # filtrar solo entradas/salidas
         acc = []
         for e in eventos_raw:
@@ -204,28 +205,3 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
         log.exception(f"job#{job_id} falló")
         db.finish_job(job_id, status="error", error_msg=str(e), duracion=dur)
         raise
-    
-
-def _events_from_db(start_utc: datetime, end_utc: datetime) -> tuple[dict, list[dict]]:
-    """Mismo contrato que hikvision.fetch_all pero leyendo de Postgres."""
-    rows = db.query_eventos(start_utc, end_utc)  # event_time ya viene en AR (naive)
-    users: dict[str, str] = {}
-    eventos: list[dict] = []
-    for r in rows:
-        emp = str(r["employee_no"])
-        nm  = (r.get("employee_name") or "").strip()
-        if nm and not users.get(emp):
-            users[emp] = nm
-        et = r["event_time"]  # naive AR -> reetiquetar a tz AR
-        if et.tzinfo is None:
-            et = et.replace(tzinfo=TZ_AR)
-        eventos.append({
-            "device":      r["device"],
-            "employee_no": emp,
-            "name":        nm,
-            "time":        et.isoformat(),
-            "major":       r.get("major"),
-            "minor":       r.get("minor"),
-            "card_no":     None,
-        })
-    return users, eventos
