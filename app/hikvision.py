@@ -238,6 +238,68 @@ def _get_device_info(host: str) -> str:
         return f"ERR:{e}"
 
 
+# def _get_users(host: str) -> dict[str, str]:
+#     users: dict[str, str] = {}
+#     pos = 0
+#     while True:
+#         body = {"UserInfoSearchCond": {
+#             "searchID": "1",
+#             "searchResultPosition": pos,
+#             "maxResults": 500,
+#         }}
+#         r = _request("POST", host, "/ISAPI/AccessControl/UserInfo/Search?format=json",
+#                      data=json.dumps(body), timeout=10)
+#         d = r.json().get("UserInfoSearch", {})
+#         lst = d.get("UserInfo", [])
+#         total = d.get("totalMatches", 0)
+#         for u in lst:
+#             users[str(u.get("employeeNo", ""))] = u.get("name", "")
+#         pos += len(lst)
+#         if not lst or pos >= total:
+#             break
+#     return users
+
+
+# def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -> list[dict]:
+#     events: list[dict] = []
+#     pos = 0
+#     while True:
+#         body = {"AcsEventCond": {
+#             "searchID": "1",
+#             "searchResultPosition": pos,
+#             "maxResults": PAGE_SIZE,
+#             "major": 0,
+#             "minor": 0,
+#             "startTime": start_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+#             "endTime":   end_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+#         }}
+#         r = _request("POST", host, "/ISAPI/AccessControl/AcsEvent?format=json",
+#                      data=json.dumps(body), timeout=15)
+#         d = r.json().get("AcsEvent", {})
+#         lst = d.get("InfoList", [])
+#         total = d.get("totalMatches", 0)
+#         for it in lst:
+#             emp_no  = str(it.get("employeeNoString", it.get("employeeNo", "")) or "").strip()
+#             card_no = str(it.get("cardNo", "") or "").strip()
+#             name    = (it.get("name", "") or "").strip()
+#             # employee_no vacío → sintetizar uno estable para no colapsar todos los anónimos en un único grupo
+#             if not emp_no:
+#                 emp_no = f"UNK-{card_no}" if card_no else f"UNK-{dname}-{it.get('time','')}"
+#             events.append({
+#                 "employee_no": emp_no,
+#                 "name":        name,
+#                 "time":        it.get("time", ""),
+#                 "major":       it.get("major", ""),
+#                 "minor":       it.get("minor", ""),
+#                 "card_no":     card_no,
+#             })
+#         pos += len(lst)
+#         if not lst or pos >= total:
+#             log.info(f"[{dname}] {len(events)} eventos descargados")
+#             break
+#         time.sleep(0.05)
+#     return events
+
 def _get_users(host: str) -> dict[str, str]:
     users: dict[str, str] = {}
     pos = 0
@@ -251,11 +313,11 @@ def _get_users(host: str) -> dict[str, str]:
                      data=json.dumps(body), timeout=10)
         d = r.json().get("UserInfoSearch", {})
         lst = d.get("UserInfo", [])
-        total = d.get("totalMatches", 0)
+        status = d.get("responseStatusStrg", "")
         for u in lst:
             users[str(u.get("employeeNo", ""))] = u.get("name", "")
         pos += len(lst)
-        if not lst or pos >= total:
+        if not lst or status != "MORE":
             break
     return users
 
@@ -277,12 +339,11 @@ def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -
                      data=json.dumps(body), timeout=15)
         d = r.json().get("AcsEvent", {})
         lst = d.get("InfoList", [])
-        total = d.get("totalMatches", 0)
+        status = d.get("responseStatusStrg", "")
         for it in lst:
             emp_no  = str(it.get("employeeNoString", it.get("employeeNo", "")) or "").strip()
             card_no = str(it.get("cardNo", "") or "").strip()
             name    = (it.get("name", "") or "").strip()
-            # employee_no vacío → sintetizar uno estable para no colapsar todos los anónimos en un único grupo
             if not emp_no:
                 emp_no = f"UNK-{card_no}" if card_no else f"UNK-{dname}-{it.get('time','')}"
             events.append({
@@ -294,12 +355,11 @@ def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -
                 "card_no":     card_no,
             })
         pos += len(lst)
-        if not lst or pos >= total:
+        if not lst or status != "MORE":
             log.info(f"[{dname}] {len(events)} eventos descargados")
             break
         time.sleep(0.05)
     return events
-
 
 def is_access_event(major, minor) -> bool:
     mj = int(major) if str(major).isdigit() else -1
