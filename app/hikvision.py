@@ -6,12 +6,19 @@ import requests
 from requests.auth import HTTPDigestAuth
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
 import json
 import time
 import threading
 import xml.etree.ElementTree as ET
 import logging
+# app/hikvision.py
+import requests, tempfile, os
+from requests.auth import HTTPDigestAuth
+from app.config import config
 
+            
+            
 from .config import (
     DEVICES, HIK_USER, HIK_PASSWORD,
     PAGE_SIZE, MAX_RETRIES, RETRY_BACKOFF,
@@ -23,6 +30,30 @@ _print_lock = threading.Lock()
 HEADERS = {"Content-Type": "application/json"}
 ACCESS_MINOR_CODES = {75, 76}  # 75=ENTRADA, 76=SALIDA
 
+def capturar_y_enrolar(ip_reloj_camara: str, employee_no: str, nombre: str):
+    auth = HTTPDigestAuth(config.HIK_USER, config.HIK_PASS)
+    fd, tmp = tempfile.mkstemp(suffix=".jpg")
+    try:
+        r = requests.get(
+            f"http://{ip_reloj_camara}/ISAPI/Streaming/channels/101/picture",
+            auth=auth, timeout=10)
+        r.raise_for_status()
+        with os.fdopen(fd, "wb") as f:
+            f.write(r.content)
+
+        with open(tmp, "rb") as img:
+            requests.post(
+                f"http://{ip_reloj_camara}/ISAPI/Intelligent/FDLib/FDSetUp?format=json",
+                auth=auth, timeout=15,
+                files={
+                    "FaceDataRecord": (None,
+                        '{"faceLibType":"blackFD","FDID":"1","FPID":"%s"}' % employee_no,
+                        "application/json"),
+                    "img": ("face.jpg", img, "image/jpeg"),
+                }).raise_for_status()
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 def _new_session() -> requests.Session:
     s = requests.Session()
@@ -115,7 +146,7 @@ def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -
                 "card_no":     card_no,
             })
         pos += len(lst)
-        if not lst or status != "MORE":
+        if not lst or len(lst) < PAGE_SIZE:
             log.info(f"[{dname}] {len(events)} eventos descargados")
             break
         time.sleep(0.05)
@@ -174,3 +205,101 @@ def fetch_all(start_utc: datetime, end_utc: datetime) -> tuple[dict, list[dict]]
         if key not in seen:
             seen[key] = e
     return all_users, list(seen.values())
+
+def crear_empleado_con_foto(host: str, emp_no: str, nombre: str,
+                            foto_bytes: bytes,
+                            depto: str = "1",
+                            begin="2024-01-01T00:00:00",
+                            end="2030-12-31T23:59:59") -> dict:
+    """Crea UserInfo + carga rostro en FDLib (1 sola subida multipart)."""
+    # 1. UserInfo
+    body = {"UserInfo": {
+        "employeeNo": emp_no,
+        "name": nombre,
+        "userType": "normal",
+        "Valid": {"enable": True, "beginTime": begin, "endTime": end,
+                  "timeType": "local"},
+        "doorRight": "1",
+        "RightPlan": [{"doorNo": 1, "planTemplateNo": "1"}],
+    }}
+    _request("POST", host, "/ISAPI/AccessControl/UserInfo/Record?format=json",
+             data=json.dumps(body), timeout=10)
+
+    # 2. Rostro vinculado por FPID = employeeNo
+    meta = json.dumps({"faceLibType": "blackFD", "FDID": "1", "FPID": emp_no})
+    s = _new_session()
+    url = f"http://{host}/ISAPI/Intelligent/FDLib/FDSetUp?format=json"
+    files = {
+        "FaceDataRecord": (None, meta, "application/json"),
+        "img": ("face.jpg", foto_bytes, "image/jpeg"),
+    }
+    r = s.post(url, files=files, timeout=20)
+    if r.status_code == 401:
+        s = _new_session()
+        r = s.post(url, files=files, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+
+def capturar_rostro(host: str, infrared: bool = False, timeout: int = 35) -> bytes:
+    """Dispara la cámara del DS-K1T343M y devuelve el JPG capturado.
+    Bloqueante: requiere una cara frente al equipo dentro del timeout."""
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<CaptureFaceDataCond version="2.0" '
+        'xmlns="http://www.isapi.org/ver20/XMLSchema">'
+        f'<captureInfrared>{str(infrared).lower()}</captureInfrared>'
+        '<dataType>binary</dataType>'
+        '</CaptureFaceDataCond>'
+    )
+    url = f"http://{host}/ISAPI/AccessControl/CaptureFaceData"
+    s = _new_session()
+    r = s.post(url, data=body, headers={"Content-Type": "application/xml"},
+               timeout=timeout)
+    if r.status_code == 401:
+        s = _new_session()
+        r = s.post(url, data=body, headers={"Content-Type": "application/xml"},
+                   timeout=timeout)
+    r.raise_for_status()
+    return _jpg_de_multipart(r.content)
+
+
+def _jpg_de_multipart(raw: bytes) -> bytes:
+    """Extrae el JPG de la respuesta multipart de CaptureFaceData."""
+    soi = raw.find(b"\xff\xd8")
+    eoi = raw.rfind(b"\xff\xd9")
+    if soi == -1 or eoi == -1:
+        # status sin imagen: parsear motivo del XML
+        txt = raw.decode("utf-8", "ignore")
+        m = re.search(r"<statusString>(.*?)</statusString>", txt)
+        raise RuntimeError(f"captura sin rostro: {m.group(1) if m else txt[:200]}")
+    return raw[soi:eoi + 2]
+
+
+def alta_empleado_flujo(host, emp_no, nombre, depto="1"):
+    # 1. crear UserInfo (sin foto)
+    body = {"UserInfo": {
+        "employeeNo": emp_no, "name": nombre, "userType": "normal",
+        "Valid": {"enable": True, "beginTime": "2024-01-01T00:00:00",
+                  "endTime": "2030-12-31T23:59:59", "timeType": "local"},
+        "RightPlan": [{"doorNo": 1, "planTemplateNo": "1"}],
+    }}
+    _request("POST", host, "/ISAPI/AccessControl/UserInfo/Record?format=json",
+             data=json.dumps(body), timeout=10)
+
+    # 2. capturar rostro con la cámara del reloj (persona enfrente, 35s)
+    jpg = capturar_rostro(host)
+
+    # 3. vincular rostro al empleado
+    meta = json.dumps({"faceLibType": "blackFD", "FDID": "1", "FPID": emp_no})
+    s = _new_session()
+    url = f"http://{host}/ISAPI/Intelligent/FDLib/FDSetUp?format=json"
+    files = {"FaceDataRecord": (None, meta, "application/json"),
+             "img": ("face.jpg", jpg, "image/jpeg")}
+    rr = s.post(url, files=files, timeout=20)
+    if rr.status_code == 401:
+        s = _new_session()
+        rr = s.post(url, files=files, timeout=20)
+    rr.raise_for_status()
+    return rr.json()
