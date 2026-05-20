@@ -1,49 +1,8 @@
-# """Carga config desde env."""
-# import os
-# import json
-# from dataclasses import dataclass
-
-
-# @dataclass
-# class Device:
-#     host: str
-#     name: str
-
-
-# def _load_devices() -> list[Device]:
-#     """
-#     HIK_DEVICES como JSON:
-#       [{"host":"10.10.0.12","name":"oficina"}, ...]
-#     """
-#     raw = os.getenv("HIK_DEVICES", "[]")
-#     return [Device(**d) for d in json.loads(raw)]
-
-
-# HIK_USER     = os.getenv("HIK_USER", "admin")
-# HIK_PASSWORD = os.getenv("HIK_PASSWORD", "")
-# DEVICES      = _load_devices()
-
-# PAGE_SIZE      = int(os.getenv("HIK_PAGE_SIZE", "30"))
-# MAX_RETRIES    = int(os.getenv("HIK_MAX_RETRIES", "4"))
-# RETRY_BACKOFF  = float(os.getenv("HIK_RETRY_BACKOFF", "2.0"))
-
-# DATABASE_URL = os.getenv("DATABASE_URL", "")
-
-# API_TOKEN = os.getenv("API_TOKEN", "")  # opcional, si está exige header
-
-
 from dotenv import load_dotenv
 import os
 import json
 from dataclasses import dataclass
-from app.config import config
 
-DEVICES       = config.HIK_DEVICES
-HIK_USER      = config.HIK_USER
-HIK_PASSWORD  = config.HIK_PASSWORD
-PAGE_SIZE     = int(os.getenv("HIK_PAGE_SIZE", "30"))
-MAX_RETRIES   = int(os.getenv("HIK_MAX_RETRIES", "4"))
-RETRY_BACKOFF = float(os.getenv("HIK_RETRY_BACKOFF", "2.0"))
 load_dotenv()
 
 
@@ -75,8 +34,18 @@ class Config:
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
-    def device_by_host(self, host: str) -> Device | None:
+    def device_by_host(self, host: str) -> "Device | None":
         return next((d for d in self.HIK_DEVICES if d.host == host), None)
 
 
 config = Config()
+
+# Alias de compatibilidad para hikvision.py
+DEVICES       = config.HIK_DEVICES
+HIK_USER      = config.HIK_USER
+HIK_PASSWORD  = config.HIK_PASSWORD
+PAGE_SIZE     = int(os.getenv("HIK_PAGE_SIZE", "30"))
+MAX_RETRIES   = int(os.getenv("HIK_MAX_RETRIES", "4"))
+RETRY_BACKOFF = float(os.getenv("HIK_RETRY_BACKOFF", "2.0"))
+DATABASE_URL  = config.DATABASE_URL
+API_TOKEN     = os.getenv("API_TOKEN", "")
