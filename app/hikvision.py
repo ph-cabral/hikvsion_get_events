@@ -15,7 +15,7 @@ import logging
 # app/hikvision.py
 import requests, tempfile, os
 from requests.auth import HTTPDigestAuth
-from app.config import config
+from .config import config
 
             
             
@@ -211,7 +211,9 @@ def crear_empleado_con_foto(host: str, emp_no: str, nombre: str,
                             depto: str = "1",
                             begin="2024-01-01T00:00:00",
                             end="2030-12-31T23:59:59") -> dict:
-    """Crea UserInfo + carga rostro en FDLib (1 sola subida multipart)."""
+    """Crea UserInfo + carga rostro en FDLib con reintentos."""
+    import time
+
     # 1. UserInfo
     body = {"UserInfo": {
         "employeeNo": emp_no,
@@ -225,20 +227,39 @@ def crear_empleado_con_foto(host: str, emp_no: str, nombre: str,
     _request("POST", host, "/ISAPI/AccessControl/UserInfo/Record?format=json",
              data=json.dumps(body), timeout=10)
 
-    # 2. Rostro vinculado por FPID = employeeNo
+    # 2. Validar JPG
+    if not (foto_bytes[:2] == b"\xff\xd8" and len(foto_bytes) > 10_000):
+        raise ValueError(f"JPG inválido: {len(foto_bytes)}b header={foto_bytes[:4]!r}")
+    log.info(f"[{host}] subiendo foto emp={emp_no} bytes={len(foto_bytes)}")
+
+    time.sleep(0.5)
+
+    # 3. Subir rostro con 3 reintentos
     meta = json.dumps({"faceLibType": "blackFD", "FDID": "1", "FPID": emp_no})
-    s = _new_session()
     url = f"http://{host}/ISAPI/Intelligent/FDLib/FDSetUp?format=json"
-    files = {
-        "FaceDataRecord": (None, meta, "application/json"),
-        "img": ("face.jpg", foto_bytes, "image/jpeg"),
-    }
-    r = s.post(url, files=files, timeout=20)
-    if r.status_code == 401:
+    last_err = None
+    for intento in range(3):
         s = _new_session()
-        r = s.post(url, files=files, timeout=20)
-    r.raise_for_status()
-    return r.json()
+        files = {
+            "FaceDataRecord": (None, meta, "application/json"),
+            "img": (f"{emp_no}.jpg", foto_bytes, "image/jpeg"),
+        }
+        try:
+            r = s.post(url, files=files, timeout=30,
+                       headers={"Connection": "close"})
+            if r.status_code == 401:
+                s = _new_session()
+                r = s.post(url, files=files, timeout=30,
+                           headers={"Connection": "close"})
+            r.raise_for_status()
+            return r.json()
+        except (requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError) as e:
+            last_err = e
+            log.warning(f"[{host}] FDSetUp intento {intento+1}/3 falló: {e}")
+            time.sleep(1.5 * (intento + 1))
+
+    raise RuntimeError(f"FDSetUp falló tras 3 intentos: {last_err}")
 
 
 
