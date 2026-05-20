@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<ResponseStatus version="1.0" xmlns="http://www.hikvision.com/ver10/XMLSchema">
-<requestURL></requestURL>
-<statusCode>4</statusCode>
-<statusString>Invalid Operation</statusString>
-<subStatusCode>notSupport</subStatusCode>
-<errorCode>1073741825</errorCode>
-<errorMsg>notSupport</errorMsg>
-</ResponseStatus>
