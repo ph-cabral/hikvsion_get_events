@@ -24,8 +24,8 @@ def _auth(token: str | None):
 
 def _poll_recent():
     now = datetime.now(TZ_AR)
-    # ventana de 30min con solape para cubrir clock drift y reintentos
-    jobs.run_sync(now - timedelta(minutes=30), now)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    jobs.run_sync(start, now)
 
 
 class SyncReq(BaseModel):
