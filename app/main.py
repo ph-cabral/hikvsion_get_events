@@ -3,13 +3,13 @@
 import os
 import logging
 from datetime import datetime, date, timedelta
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 from apscheduler.schedulers.background import BackgroundScheduler
 from .jobs import TZ_AR
 
 
-from . import db, jobs, persona
+from . import db, jobs
 from .config import API_TOKEN, DEVICES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
@@ -138,43 +138,43 @@ def debug_raw(
     }
 
 
-# ---------- maestro de personas ----------
+# # ---------- maestro de personas ----------
 
-@app.post("/personas/upload")
-async def personas_upload(
-    file: UploadFile = File(...),
-    x_token: str | None = Header(None),
-):
-    """
-    Carga/actualiza maestro de personas desde CSV o XLSX.
-    Cabeceras aceptadas (case-insensitive, con o sin espacios/underscores):
-      employee_no | person id | id   (obligatoria)
-      nombre      | name              (obligatoria)
-      departamento| department        (opcional)
-      activo      | active            (opcional, default true)
-    """
-    _auth(x_token)
-    blob = await file.read()
-    fname = (file.filename or "").lower()
-    try:
-        if fname.endswith(".xlsx") or fname.endswith(".xlsm"):
-            personas_list = persona.parse_xlsx(blob)
-        else:
-            # CSV: probar encodings en orden común para exports Hikvision (latin-1) y Excel (utf-8-sig)
-            text = None
-            for enc in ("utf-8-sig", "utf-8", "latin-1"):
-                try:
-                    text = blob.decode(enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if text is None:
-                raise HTTPException(400, "no pude decodificar el CSV (probé utf-8 y latin-1)")
-            personas_list = persona.parse_csv(text)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    n = persona.upsert(personas_list)
-    return {"upserted": n, "total_en_tabla": persona.count()}
+# @app.post("/personas/upload")
+# async def personas_upload(
+#     file: UploadFile = File(...),
+#     x_token: str | None = Header(None),
+# ):
+#     """
+#     Carga/actualiza maestro de personas desde CSV o XLSX.
+#     Cabeceras aceptadas (case-insensitive, con o sin espacios/underscores):
+#       employee_no | person id | id   (obligatoria)
+#       nombre      | name              (obligatoria)
+#       departamento| department        (opcional)
+#       activo      | active            (opcional, default true)
+#     """
+#     _auth(x_token)
+#     blob = await file.read()
+#     fname = (file.filename or "").lower()
+#     try:
+#         if fname.endswith(".xlsx") or fname.endswith(".xlsm"):
+#             personas_list = persona.parse_xlsx(blob)
+#         else:
+#             # CSV: probar encodings en orden común para exports Hikvision (latin-1) y Excel (utf-8-sig)
+#             text = None
+#             for enc in ("utf-8-sig", "utf-8", "latin-1"):
+#                 try:
+#                     text = blob.decode(enc)
+#                     break
+#                 except UnicodeDecodeError:
+#                     continue
+#             if text is None:
+#                 raise HTTPException(400, "no pude decodificar el CSV (probé utf-8 y latin-1)")
+#             personas_list = persona.parse_csv(text)
+#     except ValueError as e:
+#         raise HTTPException(400, str(e))
+#     n = persona.upsert(personas_list)
+#     return {"upserted": n, "total_en_tabla": persona.count()}
 
 
 @app.get("/personas/count")

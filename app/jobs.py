@@ -34,18 +34,28 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
     try:
         # users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
         # users, eventos_raw = _events_from_db(start_utc, end_utc)
+        # users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
+        # eventos_raw = hikvision.fetch_all(start_utc, end_utc)
         users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
+        # en jobs.py línea 38, después de fetch_all
+        log.info(f"DEBUG eventos_raw[0]: {eventos_raw[0] if eventos_raw else 'vacio'}")
+        log.info(f"DEBUG type users: {type(users)}")
         # filtrar solo entradas/salidas
         acc = []
+        # for e in eventos_raw:
+        #     if not hikvision.is_access_event(e["major"], e["minor"]):
+        #         continue
         for e in eventos_raw:
-            if not hikvision.is_access_event(e["major"], e["minor"]):
+            if not hikvision.is_access_event(e.get("major"), e.get("minor")):
                 continue
+
             try:
                 dt = _parse_iso(e["time"])
             except Exception:
                 continue
             dt_ar = dt.astimezone(TZ_AR)
-            nombre = (e["name"] or users.get(e["employee_no"], "") or "").strip() or None
+            nombre = (e["name"] or "").strip() or None
+            # nombre = (e["name"] or users.get(e["employee_no"], "") or "").strip() or None
             acc.append({
                 "device":      e["device"],
                 "employee_no": e["employee_no"],
