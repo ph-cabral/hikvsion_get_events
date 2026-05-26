@@ -91,25 +91,49 @@ def _get_device_info(host: str) -> str:
         return m.text if m is not None else "?"
     except Exception as e:
         return f"ERR:{e}"
+# def _get_users(host: str) -> dict[str, str]:
+#     users: dict[str, str] = {}
+#     pos = 0
+#     while True:
+#         body = {"UserInfoSearchCond": {
+#             "searchID": "1",
+#             "searchResultPosition": pos,
+#             "maxResults": 500,
+#         }}
+#         r = _request("POST", host, "/ISAPI/AccessControl/UserInfo/Search?format=json",
+#                      data=json.dumps(body), timeout=15)
+#         r.encoding = "utf-8"
+#         d = r.json().get("UserInfoSearch", {})
+#         lst = d.get("UserInfo", [])
+#         status = d.get("responseStatusStrg", "")
+#         for u in lst:
+#             users[str(u.get("employeeNo", ""))] = u.get("name", "")
+#         pos += len(lst)
+#         if not lst or status != "MORE":
+#             break
+#     return users
+
 def _get_users(host: str) -> dict[str, str]:
     users: dict[str, str] = {}
     pos = 0
+    PAGE = 30  # 500 a veces hace timeout/trunca en algunos FW
     while True:
         body = {"UserInfoSearchCond": {
             "searchID": "1",
             "searchResultPosition": pos,
-            "maxResults": 500,
+            "maxResults": PAGE,
         }}
         r = _request("POST", host, "/ISAPI/AccessControl/UserInfo/Search?format=json",
-                     data=json.dumps(body), timeout=10)
+                     data=json.dumps(body), timeout=15)
         d = r.json().get("UserInfoSearch", {})
         lst = d.get("UserInfo", [])
         status = d.get("responseStatusStrg", "")
         for u in lst:
             users[str(u.get("employeeNo", ""))] = u.get("name", "")
-        pos += len(lst)
-        if not lst or status != "MORE":
+        if not lst or status == "NO MATCH" or len(lst) < PAGE:
             break
+        pos += len(lst)
+        time.sleep(0.05)
     return users
 
 
@@ -128,6 +152,7 @@ def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -
         }}
         r = _request("POST", host, "/ISAPI/AccessControl/AcsEvent?format=json",
                      data=json.dumps(body), timeout=15)
+        r.encoding = "utf-8"
         d = r.json().get("AcsEvent", {})
         lst = d.get("InfoList", [])
         status = d.get("responseStatusStrg", "")
