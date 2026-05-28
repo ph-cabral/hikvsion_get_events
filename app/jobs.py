@@ -32,19 +32,12 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
     log.info(f"job#{job_id} {start_ar} → {end_ar}")
 
     try:
-        # users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
-        # users, eventos_raw = _events_from_db(start_utc, end_utc)
-        # users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
-        # eventos_raw = hikvision.fetch_all(start_utc, end_utc)
         users, eventos_raw = hikvision.fetch_all(start_utc, end_utc)
         # en jobs.py línea 38, después de fetch_all
         log.info(f"DEBUG eventos_raw[0]: {eventos_raw[0] if eventos_raw else 'vacio'}")
         log.info(f"DEBUG type users: {type(users)}")
         # filtrar solo entradas/salidas
         acc = []
-        # for e in eventos_raw:
-        #     if not hikvision.is_access_event(e["major"], e["minor"]):
-        #         continue
         for e in eventos_raw:
             if not hikvision.is_access_event(e.get("major"), e.get("minor")):
                 continue
@@ -114,3 +107,11 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
         db.finish_job(job_id, status="error", error_msg=str(e), duracion=dur)
         raise
 
+
+def _tope(fecha, devs_dia: set) -> int:
+            wd = fecha.weekday()  # 0=lun..4=vie 5=sab 6=dom
+            if wd <= 3: return config.TOPE_LUN_JUE
+            if wd == 4: return config.TOPE_VIE
+            if wd == 5 and (devs_dia & config.WEEKEND_DEVICES):
+                return config.TOPE_FINDE
+            return 0  # dom siempre 0, y sab sin device finde
