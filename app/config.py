@@ -21,6 +21,10 @@ class Config:
     HIK_USER: str = os.getenv("HIK_USER", "admin")
     HIK_PASSWORD: str = os.getenv("HIK_PASSWORD", "")
     HIK_DEVICES: list = _load_devices()
+    CLASIF_CUTOFF_HOUR: int = int(os.getenv("CLASIF_CUTOFF_HOUR", "12"))
+    CLASIF_DEVICES: set = set(
+        d.strip() for d in os.getenv("CLASIF_DEVICES", "fabrica,oficina").split(",") if d.strip()
+    )
     ANTHROPIC_KEY: str = os.getenv("ANTHROPIC_KEY", "")
     ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://n8n_qdrant:6333")
@@ -49,3 +53,5 @@ MAX_RETRIES   = int(os.getenv("HIK_MAX_RETRIES", "4"))
 RETRY_BACKOFF = float(os.getenv("HIK_RETRY_BACKOFF", "2.0"))
 DATABASE_URL  = config.DATABASE_URL
 API_TOKEN     = os.getenv("API_TOKEN", "")
+CLASIF_CUTOFF_HOUR = config.CLASIF_CUTOFF_HOUR
+CLASIF_DEVICES     = config.CLASIF_DEVICES

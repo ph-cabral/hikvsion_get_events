@@ -4,7 +4,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
-from . import hikvision, db
+from . import hikvision, db, config
+
 
 log = logging.getLogger("job")
 
@@ -41,6 +42,9 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
         for e in eventos_raw:
             if not hikvision.is_access_event(e.get("major"), e.get("minor")):
                 continue
+            
+            if str(e.get("employee_no", "")).startswith("UNK-"):
+                continue
 
             try:
                 dt = _parse_iso(e["time"])
@@ -48,6 +52,9 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
                 continue
             dt_ar = dt.astimezone(TZ_AR)
             nombre = (e["name"] or "").strip() or None
+            tipo = hikvision.event_tipo(e["minor"])
+            if e["device"] in config.CLASIF_DEVICES:
+                tipo = "ENTRADA" if dt_ar.hour < config.CLASIF_CUTOFF_HOUR else "SALIDA"
             # nombre = (e["name"] or users.get(e["employee_no"], "") or "").strip() or None
             acc.append({
                 "device":      e["device"],
@@ -58,7 +65,7 @@ def run_sync(start_ar: datetime, end_ar: datetime) -> dict:
                 "major":       int(e["major"]) if str(e["major"]).isdigit() else None,
                 "minor":       int(e["minor"]) if str(e["minor"]).isdigit() else None,
                 "card_no":     e["card_no"] or None,
-                "tipo":        hikvision.event_tipo(e["minor"]),
+                "tipo":        tipo,
             })
 
         n_ev = db.upsert_eventos(job_id, acc)
