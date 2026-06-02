@@ -113,11 +113,80 @@ def _get_device_info(host: str) -> str:
 #             break
 #     return users
 
+# def _get_users(host: str) -> dict[str, str]:
+#     users: dict[str, str] = {}
+#     pos = 0
+#     PAGE = 30  # 500 a veces hace timeout/trunca en algunos FW
+#     while True:
+#         body = {"UserInfoSearchCond": {
+#             "searchID": "1",
+#             "searchResultPosition": pos,
+#             "maxResults": PAGE,
+#         }}
+#         r = _request("POST", host, "/ISAPI/AccessControl/UserInfo/Search?format=json",
+#                      data=json.dumps(body), timeout=15)
+#         d = r.json().get("UserInfoSearch", {})
+#         lst = d.get("UserInfo", [])
+#         status = d.get("responseStatusStrg", "")
+#         for u in lst:
+#             users[str(u.get("employeeNo", ""))] = u.get("name", "")
+#         if not lst or status == "NO MATCH" or len(lst) < PAGE:
+#             break
+#         pos += len(lst)
+#         time.sleep(0.05)
+#     return users
+
+
+# def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -> list[dict]:
+#     events: list[dict] = []
+#     pos = 0
+#     while True:
+#         body = {"AcsEventCond": {
+#             "searchID": "1",
+#             "searchResultPosition": pos,
+#             "maxResults": PAGE_SIZE,
+#             "major": 0,
+#             "minor": 0,
+#             "startTime": start_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+#             "endTime":   end_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+#         }}
+#         r = _request("POST", host, "/ISAPI/AccessControl/AcsEvent?format=json",
+#                      data=json.dumps(body), timeout=15)
+#         r.encoding = "utf-8"
+#         d = r.json().get("AcsEvent", {})
+#         lst = d.get("InfoList", [])
+#         status = d.get("responseStatusStrg", "")
+#         for it in lst:
+#             emp_no  = str(it.get("employeeNoString", it.get("employeeNo", "")) or "").strip()
+#             card_no = str(it.get("cardNo", "") or "").strip()
+#             name    = (it.get("name", "") or "").strip()
+#             if not emp_no:
+#                 emp_no = f"UNK-{card_no}" if card_no else f"UNK-{dname}-{it.get('time','')}"
+#             events.append({
+#                 "employee_no": emp_no,
+#                 "name":        name,
+#                 "time":        it.get("time", ""),
+#                 "major":       it.get("major", ""),
+#                 "minor":       it.get("minor", ""),
+#                 "card_no":     card_no,
+#             })
+#         pos += len(lst)
+#         if not lst or len(lst) < PAGE_SIZE:
+#             log.info(f"[{dname}] {len(events)} eventos descargados")
+#             break
+#         time.sleep(0.05)
+#     return events
+
 def _get_users(host: str) -> dict[str, str]:
     users: dict[str, str] = {}
     pos = 0
-    PAGE = 30  # 500 a veces hace timeout/trunca en algunos FW
+    PAGE = 30
+    guard = 0
     while True:
+        guard += 1
+        if guard > 5000:
+            log.error(f"[{host}] paginación usuarios abortada pos={pos}")
+            break
         body = {"UserInfoSearchCond": {
             "searchID": "1",
             "searchResultPosition": pos,
@@ -127,12 +196,13 @@ def _get_users(host: str) -> dict[str, str]:
                      data=json.dumps(body), timeout=15)
         d = r.json().get("UserInfoSearch", {})
         lst = d.get("UserInfo", [])
-        status = d.get("responseStatusStrg", "")
+        status = (d.get("responseStatusStrg") or "").upper()
         for u in lst:
             users[str(u.get("employeeNo", ""))] = u.get("name", "")
-        if not lst or status == "NO MATCH" or len(lst) < PAGE:
-            break
         pos += len(lst)
+        # cortar solo cuando el reloj dice que no hay más
+        if not lst or status != "MORE":
+            break
         time.sleep(0.05)
     return users
 
@@ -140,7 +210,12 @@ def _get_users(host: str) -> dict[str, str]:
 def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -> list[dict]:
     events: list[dict] = []
     pos = 0
+    guard = 0
     while True:
+        guard += 1
+        if guard > 5000:
+            log.error(f"[{dname}] paginación eventos abortada pos={pos}")
+            break
         body = {"AcsEventCond": {
             "searchID": "1",
             "searchResultPosition": pos,
@@ -155,9 +230,10 @@ def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -
         r.encoding = "utf-8"
         d = r.json().get("AcsEvent", {})
         lst = d.get("InfoList", [])
-        status = d.get("responseStatusStrg", "")
+        status = (d.get("responseStatusStrg") or "").upper()
         for it in lst:
-            emp_no  = str(it.get("employeeNoString", it.get("employeeNo", "")) or "").strip()
+            # employeeNoString puede venir "" → caer a employeeNo
+            emp_no  = str(it.get("employeeNoString") or it.get("employeeNo") or "").strip()
             card_no = str(it.get("cardNo", "") or "").strip()
             name    = (it.get("name", "") or "").strip()
             if not emp_no:
@@ -171,8 +247,9 @@ def _get_events(host: str, dname: str, start_utc: datetime, end_utc: datetime) -
                 "card_no":     card_no,
             })
         pos += len(lst)
-        if not lst or len(lst) < PAGE_SIZE:
-            log.info(f"[{dname}] {len(events)} eventos descargados")
+        # NO cortar por len(lst) < PAGE_SIZE: un reloj lento puede devolver página corta con MORE
+        if not lst or status != "MORE":
+            log.info(f"[{dname}] {len(events)} eventos (status={status or '?'})")
             break
         time.sleep(0.05)
     return events
