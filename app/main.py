@@ -9,8 +9,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from .jobs import TZ_AR
 
 
-from . import db, jobs
-from .config import API_TOKEN, DEVICES
+from . import db, jobs, anviz_poller as anviz
+from .config import API_TOKEN, DEVICES, ANVIZ_ENABLED, ANVIZ_DEVICE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
 
@@ -26,6 +26,11 @@ def _poll_recent():
     now = datetime.now(TZ_AR)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     jobs.run_sync(start, now)
+    if ANVIZ_ENABLED:
+        try:
+            anviz.poll(start, now)
+        except Exception:
+            logging.getLogger("anviz").exception("poll anviz falló")
 
 
 class SyncReq(BaseModel):
@@ -49,7 +54,11 @@ def _startup():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "devices": [d.name for d in DEVICES]}
+    return {
+        "ok": True,
+        "devices": [d.name for d in DEVICES],
+        "anviz": {"enabled": ANVIZ_ENABLED, "device": ANVIZ_DEVICE},
+    }
 
 
 @app.post("/sync")
@@ -72,6 +81,13 @@ def sync_today(x_token: str | None = Header(None)):
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end   = now.replace(hour=23, minute=59, second=59, microsecond=0)
     return jobs.run_sync(start, end)
+
+
+@app.post("/sync/anviz")
+def sync_anviz(x_token: str | None = Header(None)):
+    """Descarga los fichajes del reloj Anviz y los inserta en asistencia.evento."""
+    _auth(x_token)
+    return anviz.poll()
 
 
 @app.on_event("shutdown")

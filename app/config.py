@@ -25,6 +25,11 @@ class Config:
     CLASIF_DEVICES: set = set(
         d.strip() for d in os.getenv("CLASIF_DEVICES", "fabrica,oficina").split(",") if d.strip()
     )
+    # ── Reloj Anviz (protocolo TCP) ──────────────────────────────────────────
+    ANVIZ_ENABLED: bool = os.getenv("ANVIZ_ENABLED", "1") == "1"
+    ANVIZ_IP: str = os.getenv("ANVIZ_IP", "10.10.0.147")
+    ANVIZ_PORT: int = int(os.getenv("ANVIZ_PORT", "5010"))
+    ANVIZ_DEVICE: str = os.getenv("ANVIZ_DEVICE", "anviz")
     ANTHROPIC_KEY: str = os.getenv("ANTHROPIC_KEY", "")
     ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://n8n_qdrant:6333")
@@ -55,3 +60,9 @@ DATABASE_URL  = config.DATABASE_URL
 API_TOKEN     = os.getenv("API_TOKEN", "")
 CLASIF_CUTOFF_HOUR = config.CLASIF_CUTOFF_HOUR
 CLASIF_DEVICES     = config.CLASIF_DEVICES
+
+# Alias Anviz
+ANVIZ_ENABLED = config.ANVIZ_ENABLED
+ANVIZ_IP      = config.ANVIZ_IP
+ANVIZ_PORT    = config.ANVIZ_PORT
+ANVIZ_DEVICE  = config.ANVIZ_DEVICE

@@ -1,13 +1,24 @@
-import os, socket, struct
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-import psycopg
+"""
+Conexión con el reloj Anviz (protocolo TCP, puerto 5010) e inserción de
+fichajes en asistencia.evento, integrado con el pool y el job-tracking de la app.
 
-IP     = os.getenv("ANVIZ_IP", "10.10.0.147")
-DSN    = os.getenv("DATABASE_URL")          # postgres://postgres:PASS@n8n_sql:5432/n8n
-DEVICE = "anviz"
-EPOCH  = datetime(2000, 1, 1)
-BA     = ZoneInfo("America/Argentina/Buenos_Aires")
+El protocolo binario (crc16/frame/txn/parse/decode/read_records) está verificado
+contra el equipo: NO modificar esas funciones.
+"""
+import socket
+import struct
+import time
+import logging
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from . import db
+from .config import ANVIZ_IP, ANVIZ_PORT, ANVIZ_DEVICE, CLASIF_CUTOFF_HOUR
+
+log = logging.getLogger("anviz")
+
+EPOCH = datetime(2000, 1, 1)
+BA = ZoneInfo("America/Argentina/Buenos_Aires")
 
 # ---- protocolo Anviz (verificado, sin cambios) ----
 def crc16(b):
@@ -68,30 +79,105 @@ def read_records(s, dev, batch=25):
         modo = 0x00
     return out
 
-def main():
-    with psycopg.connect(DSN) as cx, cx.cursor() as cur:
-        cur.execute('SELECT "anvizId","employeeNo" FROM everwear.legajo WHERE "anvizId" IS NOT NULL')
-        amap = {a: e for a, e in cur.fetchall()}
-
-        s = socket.create_connection((IP, 5010), timeout=5)
-        dev = struct.unpack(">I", parse(txn(s, 0x30, dev=0))[0])[0]
+# ---- integración con la app ----
+def fetch_records(ip: str | None = None, port: int | None = None, timeout: int = 5):
+    """Conecta al reloj, devuelve (dev_id, [registros decodificados])."""
+    ip = ip or ANVIZ_IP
+    port = port or ANVIZ_PORT
+    s = socket.create_connection((ip, port), timeout=timeout)
+    try:
+        head = parse(txn(s, 0x30, dev=0))
+        if not head:
+            raise RuntimeError("sin respuesta del reloj (cmd 0x30)")
+        dev = struct.unpack(">I", head[0])[0]
         recs = read_records(s, dev)
-        s.close()
+        return dev, recs
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
 
-        rows, skip = [], 0
-        for r in recs:
-            emp = amap.get(str(r["employee_no"]))
-            if emp is None:
-                skip += 1; continue
-            rows.append((DEVICE, emp, r["fecha_hora"].replace(tzinfo=BA)))
 
-        cur.executemany(
-            'INSERT INTO asistencia.evento (device, employee_no, event_time) '
-            'VALUES (%s,%s,%s) ON CONFLICT (employee_no, event_time, device) DO NOTHING',
-            rows,
+def _emp_map(conn) -> dict[str, tuple]:
+    """anvizId(str) -> (employeeNo, nombre) desde everwear.legajo."""
+    with conn.cursor() as cur:
+        cur.execute(
+            '''SELECT "anvizId" AS aid, "employeeNo" AS emp, NULLIF(TRIM(nombre), '') AS nombre
+               FROM everwear.legajo WHERE "anvizId" IS NOT NULL'''
         )
-        cx.commit()
-        print(f"leidas {len(recs)} | candidatas {len(rows)} | sin mapeo {skip} | dev {hex(dev)}")
+        out: dict[str, tuple] = {}
+        for row in cur.fetchall():
+            aid = row["aid"]
+            if aid is None:
+                continue
+            out[str(aid).strip()] = (row["emp"], row["nombre"])
+        return out
+
+
+def poll(start: datetime | None = None, end: datetime | None = None,
+         *, ip: str | None = None, port: int | None = None) -> dict:
+    """
+    Descarga los fichajes del Anviz y los upserta en asistencia.evento.
+    start/end: datetimes tz-aware opcionales para filtrar el rango (en UTC interno).
+    Idempotente (ON CONFLICT employee_no,event_time,device).
+    """
+    t0 = time.time()
+    now = datetime.now(timezone.utc)
+    s_utc = start.astimezone(timezone.utc) if start else now
+    e_utc = end.astimezone(timezone.utc) if end else now
+    job_id = db.create_job(s_utc, e_utc)
+    try:
+        with db.get_conn() as conn:
+            amap = _emp_map(conn)
+
+        dev, recs = fetch_records(ip, port)
+
+        eventos, skip = [], 0
+        for r in recs:
+            t_ar = r["fecha_hora"].replace(tzinfo=BA)
+            t_utc = t_ar.astimezone(timezone.utc)
+            if start and t_utc < s_utc:
+                continue
+            if end and t_utc > e_utc:
+                continue
+            mapped = amap.get(str(r["employee_no"]))
+            if not mapped:
+                skip += 1
+                continue
+            emp_no, nombre = mapped
+            tipo = "ENTRADA" if t_ar.hour < CLASIF_CUTOFF_HOUR else "SALIDA"
+            eventos.append({
+                "device": ANVIZ_DEVICE,
+                "employee_no": str(emp_no),
+                "name": nombre,
+                "event_time": t_utc,
+                "major": None, "minor": None, "card_no": None,
+                "tipo": tipo,
+            })
+
+        n_ok = db.upsert_eventos(job_id, eventos)
+        dur = time.time() - t0
+        db.finish_job(job_id, status="ok", eventos_raw=len(recs), eventos_ok=n_ok, duracion=dur)
+        log.info(f"anviz dev={hex(dev)} leidas={len(recs)} ok={n_ok} sin_mapeo={skip}")
+        return {
+            "job_id": job_id, "status": "ok", "device": ANVIZ_DEVICE, "dev_id": hex(dev),
+            "leidas": len(recs), "eventos_ok": n_ok, "sin_mapeo": skip,
+            "duracion_seg": round(dur, 2),
+        }
+    except Exception as ex:
+        dur = time.time() - t0
+        log.exception("anviz poll falló")
+        db.finish_job(job_id, status="error", error_msg=str(ex), duracion=dur)
+        return {"job_id": job_id, "status": "error", "error": str(ex), "duracion_seg": round(dur, 2)}
+
+
+def main():
+    """CLI: descarga todo el buffer del reloj y lo guarda. `python -m app.anviz_poller`."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
+    db.init_pool()
+    print(poll())
+
 
 if __name__ == "__main__":
     main()
