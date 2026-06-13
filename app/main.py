@@ -1,36 +1,69 @@
-
 """FastAPI on-demand."""
-import os
 import logging
-from datetime import datetime, date, timedelta
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Query
-from pydantic import BaseModel, Field
+import os
+from collections import Counter
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
+
 from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+
+from . import anviz_poller as anviz
+from . import db, hikvision, jobs, persona
+from .config import ANVIZ_DEVICE, ANVIZ_ENABLED, API_TOKEN, DEVICES
 from .jobs import TZ_AR
 
-
-from . import db, jobs, anviz_poller as anviz
-from .config import API_TOKEN, DEVICES, ANVIZ_ENABLED, ANVIZ_DEVICE
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
+log = logging.getLogger("main")
 
-app = FastAPI(title="Hikvision Asistencia API", version="1.0.0")
+# Rango máximo aceptado por /sync para evitar descargas accidentales gigantes.
+MAX_SYNC_DAYS = int(os.getenv("MAX_SYNC_DAYS", "366"))
+
 scheduler = BackgroundScheduler(timezone=TZ_AR)
 
-
-def _auth(token: str | None):
-    if API_TOKEN and token != API_TOKEN:
-        raise HTTPException(401, "token inválido")
 
 def _poll_recent():
     now = datetime.now(TZ_AR)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    jobs.run_sync(start, now)
+    try:
+        jobs.run_sync(start, now)
+    except Exception:
+        log.exception("poll hikvision falló")
     if ANVIZ_ENABLED:
         try:
             anviz.poll(start, now)
         except Exception:
             logging.getLogger("anviz").exception("poll anviz falló")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    db.init_pool()
+    if not API_TOKEN:
+        log.warning("API_TOKEN vacío: la API queda SIN autenticación. Definilo en .env para producción.")
+    if os.getenv("ENABLE_SCHEDULER", "1") == "1":
+        scheduler.add_job(_poll_recent, "cron",
+                          hour="7-18", minute="0,15,30,45",
+                          id="poll_dia", max_instances=1, coalesce=True)
+        scheduler.add_job(_poll_recent, "cron",
+                          hour=19, minute="0,15",
+                          id="poll_cierre", max_instances=1, coalesce=True)
+        scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+        db.close_pool()
+
+
+app = FastAPI(title="Hikvision Asistencia API", version="1.1.0", lifespan=lifespan)
+
+
+def _auth(token: str | None):
+    if API_TOKEN and token != API_TOKEN:
+        raise HTTPException(401, "token inválido")
 
 
 class SyncReq(BaseModel):
@@ -39,26 +72,26 @@ class SyncReq(BaseModel):
     async_mode: bool = False
 
 
-@app.on_event("startup")
-def _startup():
-    db.init_pool()
-    if os.getenv("ENABLE_SCHEDULER", "1") == "1":
-        scheduler.add_job(_poll_recent, "cron",
-                  hour="7-18", minute="0,15,30,45",
-                  id="poll_dia", max_instances=1, coalesce=True)
-        scheduler.add_job(_poll_recent, "cron",
-                        hour=19, minute="0,15",
-                        id="poll_cierre", max_instances=1, coalesce=True)
-        scheduler.start()
-
-
 @app.get("/health")
 def health():
     return {
         "ok": True,
+        "db": db.ping(),
         "devices": [d.name for d in DEVICES],
         "anviz": {"enabled": ANVIZ_ENABLED, "device": ANVIZ_DEVICE},
+        "scheduler": scheduler.running,
     }
+
+
+def _run_sync_http(start: datetime, end: datetime) -> dict:
+    """Ejecuta el sync traduciendo errores a códigos HTTP útiles."""
+    try:
+        return jobs.run_sync(start, end)
+    except hikvision.DeviceError as e:
+        raise HTTPException(502, f"relojes inaccesibles: {e}")
+    except Exception as e:
+        log.exception("sync falló")
+        raise HTTPException(500, f"sync falló: {e}")
 
 
 @app.post("/sync")
@@ -66,36 +99,34 @@ def sync(req: SyncReq, bg: BackgroundTasks, x_token: str | None = Header(None)):
     _auth(x_token)
     if req.end <= req.start:
         raise HTTPException(400, "end debe ser > start")
+    if (req.end - req.start) > timedelta(days=MAX_SYNC_DAYS):
+        raise HTTPException(400, f"rango demasiado grande (máx {MAX_SYNC_DAYS} días); usá app.backfill para histórico")
     if req.async_mode:
         bg.add_task(jobs.run_sync, req.start, req.end)
         return {"status": "queued", "start": req.start, "end": req.end}
-    return jobs.run_sync(req.start, req.end)
+    return _run_sync_http(req.start, req.end)
 
 
 @app.post("/sync/today")
 def sync_today(x_token: str | None = Header(None)):
     """Sincroniza el día de hoy (AR)."""
     _auth(x_token)
-    from .jobs import TZ_AR
     now = datetime.now(TZ_AR)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end   = now.replace(hour=23, minute=59, second=59, microsecond=0)
-    return jobs.run_sync(start, end)
+    end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    return _run_sync_http(start, end)
 
 
 @app.post("/sync/anviz")
 def sync_anviz(x_token: str | None = Header(None)):
     """Descarga los fichajes del reloj Anviz y los inserta en asistencia.evento."""
     _auth(x_token)
-    return anviz.poll()
+    res = anviz.poll()
+    if res.get("status") == "error":
+        raise HTTPException(502, res.get("error", "anviz falló"))
+    return res
 
 
-@app.on_event("shutdown")
-def _shutdown():
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
-        
-        
 @app.get("/resumen")
 def resumen(
     desde: date,
@@ -104,6 +135,8 @@ def resumen(
     x_token: str | None = Header(None),
 ):
     _auth(x_token)
+    if hasta < desde:
+        raise HTTPException(400, "hasta debe ser >= desde")
     return db.query_resumen(desde, hasta, employee_no)
 
 
@@ -112,10 +145,13 @@ def eventos(
     desde: datetime,
     hasta: datetime,
     employee_no: str | None = None,
+    limit: int | None = None,
     x_token: str | None = Header(None),
 ):
     _auth(x_token)
-    return db.query_eventos(desde, hasta, employee_no)
+    if hasta < desde:
+        raise HTTPException(400, "hasta debe ser >= desde")
+    return db.query_eventos(desde, hasta, employee_no, limit=limit)
 
 
 @app.get("/debug/raw")
@@ -128,17 +164,14 @@ def debug_raw(
     No toca la DB. Sirve para auditar qué está viendo el reloj.
     """
     _auth(x_token)
-    from .jobs import TZ_AR
-    from . import hikvision
-    from datetime import timezone, datetime as dt
+    start_ar = datetime.combine(fecha, datetime.min.time()).replace(tzinfo=TZ_AR)
+    end_ar = datetime.combine(fecha, datetime.max.time()).replace(tzinfo=TZ_AR)
+    try:
+        users, raw = hikvision.fetch_all(start_ar.astimezone(timezone.utc),
+                                         end_ar.astimezone(timezone.utc))
+    except hikvision.DeviceError as e:
+        raise HTTPException(502, f"relojes inaccesibles: {e}")
 
-    start_ar = dt.combine(fecha, dt.min.time()).replace(tzinfo=TZ_AR)
-    end_ar   = dt.combine(fecha, dt.max.time()).replace(tzinfo=TZ_AR)
-    users, raw = hikvision.fetch_all(start_ar.astimezone(timezone.utc),
-                                      end_ar.astimezone(timezone.utc))
-
-    # contar por (device, minor)
-    from collections import Counter
     breakdown = Counter()
     for e in raw:
         breakdown[(e["device"], str(e["minor"]))] += 1
@@ -152,45 +185,6 @@ def debug_raw(
         ],
         "eventos": raw,
     }
-
-
-# # ---------- maestro de personas ----------
-
-# @app.post("/personas/upload")
-# async def personas_upload(
-#     file: UploadFile = File(...),
-#     x_token: str | None = Header(None),
-# ):
-#     """
-#     Carga/actualiza maestro de personas desde CSV o XLSX.
-#     Cabeceras aceptadas (case-insensitive, con o sin espacios/underscores):
-#       employee_no | person id | id   (obligatoria)
-#       nombre      | name              (obligatoria)
-#       departamento| department        (opcional)
-#       activo      | active            (opcional, default true)
-#     """
-#     _auth(x_token)
-#     blob = await file.read()
-#     fname = (file.filename or "").lower()
-#     try:
-#         if fname.endswith(".xlsx") or fname.endswith(".xlsm"):
-#             personas_list = persona.parse_xlsx(blob)
-#         else:
-#             # CSV: probar encodings en orden común para exports Hikvision (latin-1) y Excel (utf-8-sig)
-#             text = None
-#             for enc in ("utf-8-sig", "utf-8", "latin-1"):
-#                 try:
-#                     text = blob.decode(enc)
-#                     break
-#                 except UnicodeDecodeError:
-#                     continue
-#             if text is None:
-#                 raise HTTPException(400, "no pude decodificar el CSV (probé utf-8 y latin-1)")
-#             personas_list = persona.parse_csv(text)
-#     except ValueError as e:
-#         raise HTTPException(400, str(e))
-#     n = persona.upsert(personas_list)
-#     return {"upserted": n, "total_en_tabla": persona.count()}
 
 
 @app.get("/personas/count")

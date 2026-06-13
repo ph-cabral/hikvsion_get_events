@@ -1,22 +1,70 @@
 """Capa Postgres con psycopg3 + pool."""
 import logging
+import os
+import threading
 from contextlib import contextmanager
-from datetime import datetime, date
-from psycopg_pool import ConnectionPool
+from datetime import date, datetime
+
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from .config import DATABASE_URL
 
 log = logging.getLogger("db")
 
 _pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+POOL_MIN = int(os.getenv("DB_POOL_MIN", "1"))
+POOL_MAX = int(os.getenv("DB_POOL_MAX", "4"))
+# Aborta queries que superen este tiempo (ms) para no colgar el pool.
+STATEMENT_TIMEOUT_MS = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "60000"))
+CONNECT_TIMEOUT_S = int(os.getenv("DB_CONNECT_TIMEOUT_S", "10"))
 
 
-def init_pool():
+def init_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(conninfo=DATABASE_URL, min_size=1, max_size=4, kwargs={"row_factory": dict_row})
+        with _pool_lock:
+            if _pool is None:
+                if not DATABASE_URL:
+                    raise RuntimeError("DATABASE_URL no configurada")
+                _pool = ConnectionPool(
+                    conninfo=DATABASE_URL,
+                    min_size=POOL_MIN,
+                    max_size=POOL_MAX,
+                    timeout=30,                # espera máx. por una conexión libre
+                    max_idle=300,
+                    check=ConnectionPool.check_connection,  # descarta conexiones muertas
+                    kwargs={
+                        "row_factory": dict_row,
+                        "connect_timeout": CONNECT_TIMEOUT_S,
+                        "options": f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+                    },
+                )
     return _pool
+
+
+def close_pool():
+    global _pool
+    if _pool is not None:
+        try:
+            _pool.close()
+        except Exception:
+            log.exception("error cerrando pool")
+        _pool = None
+
+
+def ping() -> bool:
+    """True si la DB responde. Nunca lanza (para healthchecks)."""
+    try:
+        with get_conn() as c, c.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        return True
+    except Exception:
+        log.exception("ping DB falló")
+        return False
 
 
 @contextmanager
@@ -37,13 +85,19 @@ def create_job(start_ts: datetime, end_ts: datetime) -> int:
 
 def finish_job(job_id: int, *, status: str, eventos_raw: int = 0, eventos_ok: int = 0,
                resumen_filas: int = 0, error_msg: str | None = None, duracion: float = 0.0):
-    with get_conn() as c, c.cursor() as cur:
-        cur.execute("""
-            UPDATE asistencia.job
-            SET status=%s, eventos_raw=%s, eventos_ok=%s, resumen_filas=%s,
-                error_msg=%s, duracion_seg=%s
-            WHERE id=%s
-        """, (status, eventos_raw, eventos_ok, resumen_filas, error_msg, duracion, job_id))
+    if error_msg:
+        error_msg = error_msg[:2000]  # no reventar por mensajes gigantes
+    try:
+        with get_conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE asistencia.job
+                SET status=%s, eventos_raw=%s, eventos_ok=%s, resumen_filas=%s,
+                    error_msg=%s, duracion_seg=%s
+                WHERE id=%s
+            """, (status, eventos_raw, eventos_ok, resumen_filas, error_msg, duracion, job_id))
+    except Exception:
+        # finish_job se llama desde handlers de error: no debe tapar la excepción original
+        log.exception(f"no pude cerrar job#{job_id}")
 
 
 def upsert_eventos(job_id: int, eventos: list[dict]) -> int:
@@ -114,7 +168,8 @@ def query_resumen(desde: date, hasta: date, employee_no: str | None = None) -> l
         return cur.fetchall()
 
 
-def query_eventos(desde: datetime, hasta: datetime, employee_no: str | None = None) -> list[dict]:
+def query_eventos(desde: datetime, hasta: datetime, employee_no: str | None = None,
+                  limit: int | None = None) -> list[dict]:
     q = """
         SELECT device, employee_no, employee_name,
                (event_time AT TIME ZONE 'America/Argentina/Buenos_Aires') AS event_time,
@@ -127,6 +182,9 @@ def query_eventos(desde: datetime, hasta: datetime, employee_no: str | None = No
         q += " AND employee_no = %s"
         params.append(employee_no)
     q += " ORDER BY event_time"
+    if limit is not None and limit > 0:
+        q += " LIMIT %s"
+        params.append(limit)
     with get_conn() as c, c.cursor() as cur:
         cur.execute(q, params)
         return cur.fetchall()

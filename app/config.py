@@ -1,20 +1,29 @@
-from dotenv import load_dotenv
-import os
 import json
+import os
 from dataclasses import dataclass
+
+from dotenv import load_dotenv
 
 load_dotenv()
 
 
-@dataclass
+@dataclass(frozen=True)
 class Device:
     host: str
     name: str
 
 
 def _load_devices() -> list[Device]:
+    """HIK_DEVICES: JSON tipo [{"host":"10.0.0.1","name":"fabrica"}, ...]"""
     raw = os.getenv("HIK_DEVICES", "[]")
-    return [Device(**d) for d in json.loads(raw)]
+    try:
+        parsed = json.loads(raw)
+        return [Device(**d) for d in parsed]
+    except (json.JSONDecodeError, TypeError) as e:
+        raise RuntimeError(
+            f'HIK_DEVICES inválido: {raw!r}. Formato esperado: '
+            '[{"host":"10.0.0.1","name":"fabrica"}]'
+        ) from e
 
 
 class Config:
@@ -30,17 +39,7 @@ class Config:
     ANVIZ_IP: str = os.getenv("ANVIZ_IP", "10.10.0.147")
     ANVIZ_PORT: int = int(os.getenv("ANVIZ_PORT", "5010"))
     ANVIZ_DEVICE: str = os.getenv("ANVIZ_DEVICE", "anviz")
-    ANTHROPIC_KEY: str = os.getenv("ANTHROPIC_KEY", "")
-    ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-    QDRANT_URL: str = os.getenv("QDRANT_URL", "http://n8n_qdrant:6333")
-    QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
-    QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "cvs")
-    MODEL_NAME: str = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-    TOP_K: int = int(os.getenv("TOP_K", "5"))
-    CONTEXT_WINDOW: int = int(os.getenv("CONTEXT_WINDOW", "30"))
-    CORS_ORIGINS: list = os.getenv("CORS", "*").split(",")
     TZ: str = os.getenv("TZ", "America/Argentina/Buenos_Aires")
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
     def device_by_host(self, host: str) -> "Device | None":

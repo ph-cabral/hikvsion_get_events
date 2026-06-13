@@ -80,23 +80,33 @@ def read_records(s, dev, batch=25):
     return out
 
 # ---- integración con la app ----
-def fetch_records(ip: str | None = None, port: int | None = None, timeout: int = 5):
-    """Conecta al reloj, devuelve (dev_id, [registros decodificados])."""
+def fetch_records(ip: str | None = None, port: int | None = None,
+                  timeout: int = 5, retries: int = 2):
+    """Conecta al reloj, devuelve (dev_id, [registros decodificados]).
+    Reintenta la conexión una vez si el reloj está momentáneamente ocupado."""
     ip = ip or ANVIZ_IP
     port = port or ANVIZ_PORT
-    s = socket.create_connection((ip, port), timeout=timeout)
-    try:
-        head = parse(txn(s, 0x30, dev=0))
-        if not head:
-            raise RuntimeError("sin respuesta del reloj (cmd 0x30)")
-        dev = struct.unpack(">I", head[0])[0]
-        recs = read_records(s, dev)
-        return dev, recs
-    finally:
+    last: Exception | None = None
+    for intento in range(max(1, retries)):
         try:
-            s.close()
-        except Exception:
-            pass
+            s = socket.create_connection((ip, port), timeout=timeout)
+            try:
+                head = parse(txn(s, 0x30, dev=0))
+                if not head:
+                    raise RuntimeError("sin respuesta del reloj (cmd 0x30)")
+                dev = struct.unpack(">I", head[0])[0]
+                recs = read_records(s, dev)
+                return dev, recs
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        except (OSError, RuntimeError) as e:
+            last = e
+            log.warning(f"anviz intento {intento + 1}/{retries} falló: {e}")
+            time.sleep(1.0 * (intento + 1))
+    raise RuntimeError(f"anviz inaccesible tras {retries} intentos: {last}") from last
 
 
 def _emp_map(conn) -> dict[str, tuple]:

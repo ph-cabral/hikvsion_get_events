@@ -33,11 +33,17 @@ def io(ip, cmd, dev, t=2):
     s.close()
     return buf
 
-for name, ip in HOSTS.items():
-    for dev in (1, 0, 0xFFFFFFFF):
-        for cmd in (0x3C, 0x30):
-            try:
-                r = io(ip, cmd, dev)
-                print(f"{name} dev={dev:#010x} cmd={cmd:#04x} -> {r.hex() or 'NADA'}")
-            except Exception as e:
-                print(f"{name} dev={dev:#010x} cmd={cmd:#04x} ERR {e}")
+def main():
+    """Script de diagnóstico: prueba comandos contra los relojes. `python -m app.anviz`"""
+    for name, ip in HOSTS.items():
+        for dev in (1, 0, 0xFFFFFFFF):
+            for cmd in (0x3C, 0x30):
+                try:
+                    r = io(ip, cmd, dev)
+                    print(f"{name} dev={dev:#010x} cmd={cmd:#04x} -> {r.hex() or 'NADA'}")
+                except Exception as e:
+                    print(f"{name} dev={dev:#010x} cmd={cmd:#04x} ERR {e}")
+
+
+if __name__ == "__main__":
+    main()
