@@ -187,6 +187,21 @@ def debug_raw(
     }
 
 
+@app.get("/debug/anviz")
+def debug_anviz(x_token: str | None = Header(None)):
+    """
+    Lee el buffer del reloj Anviz SIN guardar en DB. Agrupa por anviz_id (el ID
+    interno del reloj) mostrando cantidad de fichadas, primera/última fecha y si
+    ya está vinculado a un legajo. Sirve para ver qué IDs faltan mapear en
+    everwear.legajo.anvizId antes de correr /sync/anviz.
+    """
+    _auth(x_token)
+    try:
+        return anviz.debug_raw()
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+
 @app.get("/personas/count")
 def personas_count(x_token: str | None = Header(None)):
     _auth(x_token)

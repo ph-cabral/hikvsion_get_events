@@ -182,6 +182,48 @@ def poll(start: datetime | None = None, end: datetime | None = None,
         return {"job_id": job_id, "status": "error", "error": str(ex), "duracion_seg": round(dur, 2)}
 
 
+def debug_raw() -> dict:
+    """Lee el buffer del reloj SIN filtrar ni guardar en DB. Agrupa por el ID
+    interno del reloj (anviz_id) para ver qué usuarios tiene y cuáles ya están
+    vinculados a un legajo (everwear.legajo.anvizId)."""
+    with db.get_conn() as conn:
+        amap = _emp_map(conn)
+
+    dev, recs = fetch_records()
+
+    por_id: dict[str, dict] = {}
+    for r in recs:
+        aid = str(r["employee_no"])
+        t_ar = r["fecha_hora"].replace(tzinfo=BA)
+        e = por_id.setdefault(aid, {"cantidad": 0, "primera": t_ar, "ultima": t_ar})
+        e["cantidad"] += 1
+        if t_ar < e["primera"]:
+            e["primera"] = t_ar
+        if t_ar > e["ultima"]:
+            e["ultima"] = t_ar
+
+    usuarios = []
+    for aid, e in sorted(por_id.items(), key=lambda kv: -kv[1]["cantidad"]):
+        mapped = amap.get(aid)
+        usuarios.append({
+            "anviz_id": aid,
+            "cantidad_fichadas": e["cantidad"],
+            "primera": e["primera"].isoformat(),
+            "ultima": e["ultima"].isoformat(),
+            "vinculado": mapped is not None,
+            "employee_no": mapped[0] if mapped else None,
+            "nombre": mapped[1] if mapped else None,
+        })
+
+    return {
+        "device": ANVIZ_DEVICE, "dev_id": hex(dev), "total_fichadas": len(recs),
+        "usuarios_distintos": len(usuarios),
+        "vinculados": sum(1 for u in usuarios if u["vinculado"]),
+        "sin_vincular": sum(1 for u in usuarios if not u["vinculado"]),
+        "usuarios": usuarios,
+    }
+
+
 def main():
     """CLI: descarga todo el buffer del reloj y lo guarda. `python -m app.anviz_poller`."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
