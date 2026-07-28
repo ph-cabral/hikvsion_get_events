@@ -123,6 +123,17 @@ def _a_jpg(raw: bytes) -> bytes | None:
         return None
 
 
+# Dos APIs distintas de Hikvision para "cargar un rostro". FDLib/FDSetUp es la
+# biblioteca de rostros de cámaras/NVR (video); estos equipos son terminales
+# de control de acceso (DS-K1T), que en general exponen UserFace/Record en el
+# namespace AccessControl (el mismo que ya usa UserInfo/Record). Probamos
+# UserFace primero y dejamos FDLib como fallback/diagnóstico.
+FACE_ENDPOINTS = (
+    "/ISAPI/AccessControl/UserFace/Record?format=json",
+    "/ISAPI/Intelligent/FDLib/FDSetUp?format=json",
+)
+
+
 def agregar_rostro(host: str, employee_no: str, foto_jpg: bytes) -> dict:
     """Sube el rostro a un UserInfo YA EXISTENTE en el reloj (no crea/edita UserInfo)."""
     meta = json.dumps({"faceLibType": "blackFD", "FDID": "1", "FPID": employee_no})
@@ -130,11 +141,20 @@ def agregar_rostro(host: str, employee_no: str, foto_jpg: bytes) -> dict:
         "FaceDataRecord": (None, meta, "application/json"),
         "img": (f"{employee_no}.jpg", foto_jpg, "image/jpeg"),
     }
-    r = _post_files(host, "/ISAPI/Intelligent/FDLib/FDSetUp?format=json", files=files, timeout=30)
-    try:
-        return r.json()
-    except Exception:
-        return {"raw": r.text}
+    errores: list[str] = []
+    for path in FACE_ENDPOINTS:
+        try:
+            r = _post_files(host, path, files=files, timeout=30)
+            try:
+                data = r.json()
+            except Exception:
+                data = {"raw": r.text}
+            data["_endpoint_usado"] = path
+            return data
+        except requests.HTTPError as e:
+            body = e.response.text[:300] if e.response is not None else ""
+            errores.append(f"{path} -> {e} :: {body}")
+    raise RuntimeError(" || ".join(errores))
 
 
 def enrolar_fotos(dry_run: bool = True) -> dict:
