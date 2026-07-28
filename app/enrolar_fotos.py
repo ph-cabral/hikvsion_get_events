@@ -7,6 +7,10 @@ legajo por DNI (carpeta employees/, fuera de git). Como ever y hikvision-api
 comparten la network docker "ai-net", se llega directo por nombre de
 container: http://mangueras_ever:3000/api/rrhh/legajos/foto/<dni>.
 
+Ese endpoint exige sesión (middleware.ts la protege como a cualquier /api/*),
+así que logueamos una vez con un usuario real (EVER_LOGIN_DNI/PASSWORD) y
+reusamos la cookie firmada (dura 12hs) para todas las fotos de la corrida.
+
 Deliberadamente NO toca ningún (device, employee_no) que no esté en la lista
 estática de altas_20260728.json: esa lista son los únicos casos garantizados
 sin rostro enrolado (el UserInfo no existía en ese reloj antes de esa
@@ -17,19 +21,37 @@ enrolada de antes (no queremos pisar biometría real con una foto de legajo).
 import io
 import json
 import logging
-import os
 from pathlib import Path
 
 import requests
 
 from . import db
-from .config import DEVICES, EVER_FOTO_BASE_URL
+from .config import DEVICES, EVER_BASE_URL, EVER_LOGIN_DNI, EVER_LOGIN_PASSWORD
 from .hikvision import _post_files
 
 log = logging.getLogger("enrolar_fotos")
 
 DATA_FILE = Path(__file__).parent / "data" / "altas_20260728.json"
 FETCH_TIMEOUT = 10
+
+_session: requests.Session | None = None
+
+
+def _ever_session() -> requests.Session:
+    """Sesión logueada contra ever (cookie ever_session). Se cachea por proceso."""
+    global _session
+    if _session is not None:
+        return _session
+    if not EVER_LOGIN_PASSWORD:
+        raise RuntimeError("EVER_LOGIN_PASSWORD no configurada (.env de hikvision-api)")
+    s = requests.Session()
+    r = s.post(f"{EVER_BASE_URL}/api/auth/login",
+               json={"dni": EVER_LOGIN_DNI, "password": EVER_LOGIN_PASSWORD},
+               timeout=FETCH_TIMEOUT)
+    if r.status_code != 200 or not r.json().get("ok"):
+        raise RuntimeError(f"login a ever falló ({r.status_code}): {r.text[:300]}")
+    _session = s
+    return s
 
 
 def _host_por_nombre(nombre: str) -> str | None:
@@ -68,13 +90,21 @@ def dni_por_employee_no() -> dict[str, str]:
 
 
 def _fetch_foto(dni: str) -> bytes | None:
-    url = f"{EVER_FOTO_BASE_URL.rstrip('/')}/{dni}"
-    try:
-        r = requests.get(url, timeout=FETCH_TIMEOUT)
-        if r.status_code == 200 and r.content:
-            return r.content
-    except requests.RequestException as e:
-        log.warning(f"fetch foto dni={dni} falló: {e}")
+    global _session
+    url = f"{EVER_BASE_URL}/api/rrhh/legajos/foto/{dni}"
+    for intento in range(2):  # 1 reintento si la sesión vino vencida
+        try:
+            s = _ever_session()
+            r = s.get(url, timeout=FETCH_TIMEOUT)
+            if r.status_code == 200 and r.content:
+                return r.content
+            if r.status_code in (401, 403) and intento == 0:
+                _session = None  # forzar re-login y reintentar una vez
+                continue
+            return None
+        except requests.RequestException as e:
+            log.warning(f"fetch foto dni={dni} falló: {e}")
+            return None
     return None
 
 
