@@ -10,7 +10,7 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import anviz_poller as anviz
-from . import db, hikvision, jobs, persona
+from . import db, hikvision, jobs, persona, relojes_sync
 from .config import ANVIZ_DEVICE, ANVIZ_ENABLED, API_TOKEN, DEVICES
 from .jobs import TZ_AR
 
@@ -206,3 +206,37 @@ def debug_anviz(x_token: str | None = Header(None)):
 def personas_count(x_token: str | None = Header(None)):
     _auth(x_token)
     return {"total": persona.count()}
+
+
+@app.get("/relojes/diff")
+def relojes_diff(x_token: str | None = Header(None)):
+    """
+    Solo lectura: compara everwear.legajo (activos) contra los usuarios
+    ya cargados en cada reloj Hikvision y lista quién falta en cuál.
+    No escribe nada.
+    """
+    _auth(x_token)
+    try:
+        return relojes_sync.diff_por_reloj()
+    except Exception as e:
+        log.exception("relojes/diff falló")
+        raise HTTPException(500, f"relojes/diff falló: {e}")
+
+
+class SyncRelojesReq(BaseModel):
+    dry_run: bool = True
+
+
+@app.post("/relojes/sync")
+def relojes_sync_endpoint(req: SyncRelojesReq, x_token: str | None = Header(None)):
+    """
+    Da de alta (UserInfo básico, sin foto) en cada reloj los legajos activos
+    que le falten. dry_run=true (default) solo reporta, no escribe.
+    Idempotente: nunca toca usuarios que ya existen en el reloj.
+    """
+    _auth(x_token)
+    try:
+        return relojes_sync.sync_faltantes(dry_run=req.dry_run)
+    except Exception as e:
+        log.exception("relojes/sync falló")
+        raise HTTPException(500, f"relojes/sync falló: {e}")
