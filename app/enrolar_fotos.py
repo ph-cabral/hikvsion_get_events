@@ -170,9 +170,18 @@ def enrolar_fotos(dry_run: bool = True) -> dict:
                 try:
                     agregar_rostro(host, emp, jpg)
                     det["subidas_ok"] += 1
+                except requests.HTTPError as e:
+                    body = e.response.text[:500] if e.response is not None else ""
+                    log.error(f"[{device_name}] rostro {emp} HTTP {e}: {body}")
+                    det["errores"].append({
+                        "employee_no": emp, "dni": dni,
+                        "foto_bytes": len(jpg),
+                        "error": str(e), "detalle_reloj": body,
+                    })
                 except Exception as e:
                     log.error(f"[{device_name}] rostro {emp} falló: {e}")
-                    det["errores"].append({"employee_no": emp, "dni": dni, "error": str(e)})
+                    det["errores"].append({"employee_no": emp, "dni": dni,
+                                           "foto_bytes": len(jpg), "error": str(e)})
 
         resultado["relojes"].append(det)
     return resultado
