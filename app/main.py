@@ -10,7 +10,7 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import anviz_poller as anviz
-from . import db, hikvision, jobs, persona, relojes_sync
+from . import db, enrolar_fotos, hikvision, jobs, persona, relojes_sync
 from .config import ANVIZ_DEVICE, ANVIZ_ENABLED, API_TOKEN, DEVICES
 from .jobs import TZ_AR
 
@@ -240,3 +240,24 @@ def relojes_sync_endpoint(req: SyncRelojesReq, x_token: str | None = Header(None
     except Exception as e:
         log.exception("relojes/sync falló")
         raise HTTPException(500, f"relojes/sync falló: {e}")
+
+
+class EnrolarFotosReq(BaseModel):
+    dry_run: bool = True
+
+
+@app.post("/relojes/enrolar-fotos")
+def relojes_enrolar_fotos(req: EnrolarFotosReq, x_token: str | None = Header(None)):
+    """
+    Sube la foto de legajo (vía endpoint de ever, por DNI) como rostro en
+    Hikvision (FDSetUp) para los (device, employee_no) dados de alta el
+    2026-07-28 sin biometría — ver app/data/altas_20260728.json.
+    No toca a nadie fuera de esa lista. dry_run=true (default) solo reporta
+    quién tiene foto disponible y lista para subir, sin escribir nada.
+    """
+    _auth(x_token)
+    try:
+        return enrolar_fotos.enrolar_fotos(dry_run=req.dry_run)
+    except Exception as e:
+        log.exception("relojes/enrolar-fotos falló")
+        raise HTTPException(500, f"relojes/enrolar-fotos falló: {e}")

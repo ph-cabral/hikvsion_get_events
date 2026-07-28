@@ -41,6 +41,11 @@ class Config:
     ANVIZ_DEVICE: str = os.getenv("ANVIZ_DEVICE", "anviz")
     TZ: str = os.getenv("TZ", "America/Argentina/Buenos_Aires")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    # URL base del endpoint de fotos de ever (mismo network docker "ai-net";
+    # container_name mangueras_ever, puerto interno 3000).
+    EVER_FOTO_BASE_URL: str = os.getenv(
+        "EVER_FOTO_BASE_URL", "http://mangueras_ever:3000/api/rrhh/legajos/foto"
+    )
 
     def device_by_host(self, host: str) -> "Device | None":
         return next((d for d in self.HIK_DEVICES if d.host == host), None)
@@ -65,3 +70,4 @@ ANVIZ_ENABLED = config.ANVIZ_ENABLED
 ANVIZ_IP      = config.ANVIZ_IP
 ANVIZ_PORT    = config.ANVIZ_PORT
 ANVIZ_DEVICE  = config.ANVIZ_DEVICE
+EVER_FOTO_BASE_URL = config.EVER_FOTO_BASE_URL
