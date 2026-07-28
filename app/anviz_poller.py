@@ -152,7 +152,7 @@ def poll(start: datetime | None = None, end: datetime | None = None,
             if end and t_utc > e_utc:
                 continue
             mapped = amap.get(str(r["employee_no"]))
-            if not mapped:
+            if not mapped or not mapped[0]:
                 skip += 1
                 continue
             emp_no, nombre = mapped
