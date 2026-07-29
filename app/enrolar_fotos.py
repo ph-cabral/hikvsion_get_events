@@ -123,12 +123,13 @@ def _a_jpg(raw: bytes) -> bytes | None:
         return None
 
 
-# Dos APIs distintas de Hikvision para "cargar un rostro". FDLib/FDSetUp es la
-# biblioteca de rostros de cámaras/NVR (video); estos equipos son terminales
-# de control de acceso (DS-K1T), que en general exponen UserFace/Record en el
-# namespace AccessControl (el mismo que ya usa UserInfo/Record). Probamos
-# UserFace primero y dejamos FDLib como fallback/diagnóstico.
+# FaceDataRecord es el endpoint que ya se usaba (ver asignar_foto.py, script
+# previo verificado a mano contra estos mismos relojes) — a diferencia de
+# FDSetUp/UserFace-Record (ambos rechazados por el dispositivo: notSupport /
+# methodNotAllowed), este solo agrega la foto sin pedir reconocimiento facial.
+# Se deja como primer intento; los otros dos quedan de fallback/diagnóstico.
 FACE_ENDPOINTS = (
+    "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json",
     "/ISAPI/AccessControl/UserFace/Record?format=json",
     "/ISAPI/Intelligent/FDLib/FDSetUp?format=json",
 )
