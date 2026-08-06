@@ -10,7 +10,7 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import anviz_poller as anviz
-from . import db, enrolar_fotos, hikvision, jobs, persona, relojes_sync
+from . import db, enrolar_fotos, face_sync, hikvision, jobs, persona, relojes_sync
 from .config import ANVIZ_DEVICE, ANVIZ_ENABLED, API_TOKEN, DEVICES
 from .jobs import TZ_AR
 
@@ -261,3 +261,24 @@ def relojes_enrolar_fotos(req: EnrolarFotosReq, x_token: str | None = Header(Non
     except Exception as e:
         log.exception("relojes/enrolar-fotos falló")
         raise HTTPException(500, f"relojes/enrolar-fotos falló: {e}")
+
+
+class SyncRostrosReq(BaseModel):
+    dry_run: bool = True
+    orden: list[str] | None = None  # ej: ["oficina","fabrica","lilser"]
+
+
+@app.post("/relojes/sync-rostros")
+def relojes_sync_rostros(req: SyncRostrosReq, x_token: str | None = Header(None)):
+    """
+    Replica rostros entre relojes: para cada origen (en `orden`, default el
+    orden de HIK_DEVICES) sube a los demás relojes los rostros que les
+    falten. Nunca pisa un rostro existente (unión de rostros en los 3).
+    dry_run=true (default) solo lista qué copiaría.
+    """
+    _auth(x_token)
+    try:
+        return face_sync.sync_rostros(dry_run=req.dry_run, orden=req.orden)
+    except Exception as e:
+        log.exception("relojes/sync-rostros falló")
+        raise HTTPException(500, f"relojes/sync-rostros falló: {e}")
