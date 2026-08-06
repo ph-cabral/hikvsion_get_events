@@ -23,7 +23,8 @@ import requests
 
 from .config import DEVICES, HIK_USER, HIK_PASSWORD
 from .enrolar_fotos import _a_jpg
-from .hikvision import _post_files, _request
+from .hikvision import _get_users, _post_files, _request
+from .relojes_sync import crear_usuario_basico
 
 log = logging.getLogger("face_sync")
 
@@ -109,11 +110,25 @@ def _ordenar_devices(orden: list[str] | None):
     return out
 
 
-def sync_rostros(dry_run: bool = True, orden: list[str] | None = None) -> dict:
+def sync_rostros(dry_run: bool = True, orden: list[str] | None = None,
+                 crear_usuarios: bool = False) -> dict:
+    """crear_usuarios=True: si el destino responde employeeNoNotExist, crea el
+    UserInfo básico (nombre tomado del reloj origen) y reintenta la foto."""
     devices = _ordenar_devices(orden)
     resultado: dict = {"dry_run": dry_run,
                        "orden": [d.name for d in devices],
+                       "crear_usuarios": crear_usuarios,
                        "rostros_por_reloj": {}, "pares": []}
+    nombres: dict[str, dict[str, str]] = {}  # device.name -> {employeeNo: nombre}
+
+    def _nombre(src_dev, fpid: str) -> str:
+        if src_dev.name not in nombres:
+            try:
+                nombres[src_dev.name] = _get_users(src_dev.host)
+            except Exception as e:
+                log.warning(f"[{src_dev.name}] no pude listar usuarios: {e}")
+                nombres[src_dev.name] = {}
+        return nombres[src_dev.name].get(fpid, "") or fpid
 
     # 1. inventario de rostros por reloj
     rostros: dict[str, dict[str, str]] = {}   # device.name -> {fpid: faceURL}
@@ -138,7 +153,7 @@ def sync_rostros(dry_run: bool = True, orden: list[str] | None = None) -> dict:
             faltan = sorted(set(rostros[src.name]) - set(rostros[dst.name]))
             par: dict = {"origen": src.name, "destino": dst.name,
                          "faltantes": len(faltan), "fpids": faltan,
-                         "subidos": 0, "errores": []}
+                         "subidos": 0, "usuarios_creados": 0, "errores": []}
             if not dry_run:
                 for fpid in faltan:
                     try:
@@ -146,7 +161,15 @@ def sync_rostros(dry_run: bool = True, orden: list[str] | None = None) -> dict:
                         if key not in cache:
                             cache[key] = _descargar_rostro(
                                 src.host, rostros[src.name][fpid])
-                        _subir_rostro(dst.host, fpid, cache[key])
+                        try:
+                            _subir_rostro(dst.host, fpid, cache[key])
+                        except RuntimeError as e:
+                            if not (crear_usuarios and "employeeNoNotExist" in str(e)):
+                                raise
+                            crear_usuario_basico(dst.host, fpid, _nombre(src, fpid))
+                            par["usuarios_creados"] += 1
+                            time.sleep(0.4)
+                            _subir_rostro(dst.host, fpid, cache[key])
                         par["subidos"] += 1
                         # el destino ya lo tiene: los próximos orígenes no lo re-suben
                         rostros[dst.name][fpid] = ""

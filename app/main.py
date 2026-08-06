@@ -266,6 +266,7 @@ def relojes_enrolar_fotos(req: EnrolarFotosReq, x_token: str | None = Header(Non
 class SyncRostrosReq(BaseModel):
     dry_run: bool = True
     orden: list[str] | None = None  # ej: ["oficina","fabrica","lilser"]
+    crear_usuarios: bool = False  # crea UserInfo en destino si no existe (employeeNoNotExist)
 
 
 @app.post("/relojes/sync-rostros")
@@ -278,7 +279,8 @@ def relojes_sync_rostros(req: SyncRostrosReq, x_token: str | None = Header(None)
     """
     _auth(x_token)
     try:
-        return face_sync.sync_rostros(dry_run=req.dry_run, orden=req.orden)
+        return face_sync.sync_rostros(dry_run=req.dry_run, orden=req.orden,
+                                      crear_usuarios=req.crear_usuarios)
     except Exception as e:
         log.exception("relojes/sync-rostros falló")
         raise HTTPException(500, f"relojes/sync-rostros falló: {e}")
