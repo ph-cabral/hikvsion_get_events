@@ -122,26 +122,60 @@ def colisiones(cur, start, end, dias):
     return cur.fetchone()["n"]
 
 
-def aplicar(cur, start, end, dias):
-    cur.execute(BACKUP_DDL)
+def colisiones_detalle(cur, start, end, dias):
     cur.execute(
         """
-        INSERT INTO asistencia.evento_fix_backup
-            (id, device, employee_no, employee_name, event_time_orig, dias_aplicados)
-        SELECT id, device, employee_no, employee_name, event_time, %s
-        FROM asistencia.evento
-        WHERE device = 'anviz' AND event_time >= %s AND event_time < %s
+        SELECT e1.id AS id_a_mover, e1.employee_no, e1.employee_name,
+               (e1.event_time AT TIME ZONE 'America/Argentina/Buenos_Aires') AS orig,
+               e2.id AS id_choca,
+               (e2.event_time AT TIME ZONE 'America/Argentina/Buenos_Aires') AS ya_existe,
+               e1.tipo AS tipo_a_mover, e2.tipo AS tipo_choca
+        FROM asistencia.evento e1
+        JOIN asistencia.evento e2
+          ON e2.employee_no = e1.employee_no
+         AND e2.device = 'anviz'
+         AND e2.event_time = e1.event_time + (%s || ' days')::interval
+        WHERE e1.device = 'anviz' AND e1.event_time >= %s AND e1.event_time < %s
         """,
         (dias, start, end),
     )
+    return cur.fetchall()
+
+
+def aplicar(cur, start, end, dias, excluir_colisiones=False):
+    excl_sql = ""
+    if excluir_colisiones:
+        excl_sql = """
+          AND NOT EXISTS (
+              SELECT 1 FROM asistencia.evento e2
+              WHERE e2.employee_no = asistencia.evento.employee_no
+                AND e2.device = 'anviz'
+                AND e2.event_time = asistencia.evento.event_time + (%(dias)s || ' days')::interval
+          )
+        """
+    params = {"dias": dias, "start": start, "end": end}
+
+    cur.execute(BACKUP_DDL)
+    cur.execute(
+        f"""
+        INSERT INTO asistencia.evento_fix_backup
+            (id, device, employee_no, employee_name, event_time_orig, dias_aplicados)
+        SELECT id, device, employee_no, employee_name, event_time, %(dias)s
+        FROM asistencia.evento
+        WHERE device = 'anviz' AND event_time >= %(start)s AND event_time < %(end)s
+        {excl_sql}
+        """,
+        params,
+    )
     n_backup = cur.rowcount
     cur.execute(
-        """
+        f"""
         UPDATE asistencia.evento
-        SET event_time = event_time + (%s || ' days')::interval
-        WHERE device = 'anviz' AND event_time >= %s AND event_time < %s
+        SET event_time = event_time + (%(dias)s || ' days')::interval
+        WHERE device = 'anviz' AND event_time >= %(start)s AND event_time < %(end)s
+        {excl_sql}
         """,
-        (dias, start, end),
+        params,
     )
     return n_backup, cur.rowcount
 
@@ -168,6 +202,10 @@ def main():
     ap.add_argument("--diag", action="store_true", help="solo diagnóstico, no toca nada")
     ap.add_argument("--commit", action="store_true", help="aplica el corrimiento de verdad")
     ap.add_argument("--revertir", action="store_true", help="restaura el mes desde el backup")
+    ap.add_argument("--ver-colisiones", action="store_true",
+                    help="muestra el detalle de las filas que chocarían, no toca nada")
+    ap.add_argument("--saltar-colisiones", action="store_true",
+                    help="aplica el corrimiento igual, dejando afuera las filas que chocarían")
     args = ap.parse_args()
 
     y, m = map(int, args.mes.split("-"))
@@ -185,6 +223,13 @@ def main():
             print(f"revertidas {n} filas en {args.mes}")
             return
 
+        if args.ver_colisiones:
+            for r in colisiones_detalle(cur, start, end, args.dias):
+                print(f"  id={r['id_a_mover']} {r['employee_name']} orig={r['orig']} "
+                      f"({r['tipo_a_mover']})  ->  ya existe id={r['id_choca']} "
+                      f"{r['ya_existe']} ({r['tipo_choca']})")
+            return
+
         n = contar(cur, start, end)
         print(f"{args.mes}: {n} fichadas anviz en rango")
         if n == 0:
@@ -192,17 +237,22 @@ def main():
             return
 
         choques = colisiones(cur, start, end, args.dias)
-        if choques:
+        if choques and not args.saltar_colisiones:
             print(f"ABORTO: {choques} filas chocarían con un event_time ya existente "
-                  f"(UNIQUE employee_no,event_time,device). Revisá antes de --commit.")
+                  f"(UNIQUE employee_no,event_time,device). "
+                  f"Corré con --ver-colisiones para ver el detalle, o con --saltar-colisiones "
+                  f"para aplicar el resto dejando esas afuera.")
             return
+        if choques and args.saltar_colisiones:
+            print(f"aviso: {choques} fila(s) quedan afuera por colisión (revisalas a mano después).")
 
         if not args.commit:
             print(f"dry-run: aplicaría +{args.dias} día(s) a {n} filas. "
                   f"Repetí con --commit para escribir (hace backup automático).")
             return
 
-        n_backup, n_upd = aplicar(cur, start, end, args.dias)
+        n_backup, n_upd = aplicar(cur, start, end, args.dias,
+                                   excluir_colisiones=args.saltar_colisiones)
         conn.commit()
         print(f"OK: backup {n_backup} filas, actualizadas {n_upd} filas en {args.mes} "
               f"({'+' if args.dias >= 0 else ''}{args.dias} día/s).")
