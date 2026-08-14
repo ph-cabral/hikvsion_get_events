@@ -43,12 +43,12 @@ async def lifespan(_app: FastAPI):
     if not API_TOKEN:
         log.warning("API_TOKEN vacío: la API queda SIN autenticación. Definilo en .env para producción.")
     if os.getenv("ENABLE_SCHEDULER", "1") == "1":
+        # 10 consultas por hora (~cada 6 min) de 7 a 19h. Antes eran 4/hora
+        # (cada 15 min) 7-18h + 2 sueltas a las 19h; se unificó en un solo
+        # job con el mismo ritmo en todo el rango (2026-08-13, pedido de Pablo).
         scheduler.add_job(_poll_recent, "cron",
-                          hour="7-18", minute="0,15,30,45",
+                          hour="7-19", minute="0,6,12,18,24,30,36,42,48,54",
                           id="poll_dia", max_instances=1, coalesce=True)
-        scheduler.add_job(_poll_recent, "cron",
-                          hour=19, minute="0,15",
-                          id="poll_cierre", max_instances=1, coalesce=True)
         scheduler.start()
     try:
         yield

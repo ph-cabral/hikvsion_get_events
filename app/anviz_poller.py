@@ -80,14 +80,40 @@ def read_records(s, dev, batch=25):
     return out
 
 # ---- integración con la app ----
+def _rec_key(r: dict) -> tuple:
+    """Clave única de una fichada decodificada, para mergear lecturas parciales."""
+    return (r["employee_no"], r["fecha_hora"], r["verify"], r["estado"], r["workcode"])
+
+
 def fetch_records(ip: str | None = None, port: int | None = None,
-                  timeout: int = 5, retries: int = 2):
+                  timeout: int = 5, retries: int = 2,
+                  *, lecturas_max: int = 5, lecturas_estables: int = 2):
     """Conecta al reloj, devuelve (dev_id, [registros decodificados]).
-    Reintenta la conexión una vez si el reloj está momentáneamente ocupado."""
+
+    El reloj es flaky: bajo conexión inestable, `read_records` puede cortarse
+    a mitad de la descarga del buffer y devolver eso como si fuera todo (no
+    distingue "fin real del buffer" de "se cortó a mitad de un lote" — ver
+    2026-08-13, se confirmó con varias lecturas que la fecha "primera"
+    siempre daba igual pero "ultima"/el total variaban muchísimo entre
+    llamadas). Como la lectura siempre arranca desde el registro más viejo,
+    una lectura corta es un PREFIJO de la real y lo más nuevo (al final) es
+    lo que más se pierde.
+
+    Por eso acá hacemos varias conexiones/lecturas y las vamos mergeando por
+    clave única, hasta que unas cuantas lecturas seguidas no aporten nada
+    nuevo (`lecturas_estables`) o se llegue a `lecturas_max` intentos. Si
+    ninguna conexión prospera (reloj inaccesible), reintenta `retries` veces
+    antes de darse por vencido, igual que antes.
+    """
     ip = ip or ANVIZ_IP
     port = port or ANVIZ_PORT
+    dev_id: int | None = None
+    merged: dict[tuple, dict] = {}
+    estables = 0
+    fallos_seguidos = 0
     last: Exception | None = None
-    for intento in range(max(1, retries)):
+
+    for intento in range(max(1, lecturas_max)):
         try:
             s = socket.create_connection((ip, port), timeout=timeout)
             try:
@@ -95,8 +121,8 @@ def fetch_records(ip: str | None = None, port: int | None = None,
                 if not head:
                     raise RuntimeError("sin respuesta del reloj (cmd 0x30)")
                 dev = struct.unpack(">I", head[0])[0]
+                dev_id = dev
                 recs = read_records(s, dev)
-                return dev, recs
             finally:
                 try:
                     s.close()
@@ -104,9 +130,38 @@ def fetch_records(ip: str | None = None, port: int | None = None,
                     pass
         except (OSError, RuntimeError) as e:
             last = e
-            log.warning(f"anviz intento {intento + 1}/{retries} falló: {e}")
-            time.sleep(1.0 * (intento + 1))
-    raise RuntimeError(f"anviz inaccesible tras {retries} intentos: {last}") from last
+            fallos_seguidos += 1
+            log.warning(f"anviz lectura {intento + 1}/{lecturas_max} falló "
+                        f"({fallos_seguidos}/{retries} fallos seguidos): {e}")
+            if fallos_seguidos >= retries and dev_id is None:
+                # nunca conectó ni una vez: no hay datos parciales que devolver
+                raise RuntimeError(
+                    f"anviz inaccesible tras {retries} intentos: {last}"
+                ) from last
+            time.sleep(1.0 * fallos_seguidos)
+            continue
+
+        fallos_seguidos = 0
+        nuevos = 0
+        for r in recs:
+            k = _rec_key(r)
+            if k not in merged:
+                merged[k] = r
+                nuevos += 1
+        log.info(f"anviz lectura {intento + 1}/{lecturas_max}: {len(recs)} leidos, "
+                 f"{nuevos} nuevos (acumulado {len(merged)})")
+
+        if nuevos == 0:
+            estables += 1
+            if estables >= lecturas_estables:
+                break
+        else:
+            estables = 0
+
+    if dev_id is None:
+        raise RuntimeError(f"anviz inaccesible tras {retries} intentos: {last}") from last
+
+    return dev_id, list(merged.values())
 
 
 def _emp_map(conn) -> dict[str, tuple]:
