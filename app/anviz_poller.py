@@ -34,6 +34,35 @@ def frame(cmd, data=b"", dev=0):
     c = crc16(body)
     return body + bytes([c & 0xFF, c >> 8 & 0xFF])
 
+def _frame_listo(buf: bytes) -> bool:
+    """True si `buf` ya contiene una respuesta completa de las que devuelve
+    `parse` (salteando los ACK 0xDF de "ocupado", igual que parse).
+
+    Existe para que `txn` corte en cuanto llegó la respuesta en vez de esperar
+    SIEMPRE a que venza el timeout del socket. Con lotes de 25 registros y
+    t=3s, bajar ~800 fichadas costaba ~100 s de puro sleep y la lectura nunca
+    alcanzaba el final del buffer (diagnosticado 2026-08-25: `ultima` clavada
+    en abril mientras el reloj seguia grabando bien).
+    """
+    i = 0
+    while i < len(buf):
+        if buf[i] != 0xA5:
+            i += 1
+            continue
+        if len(buf) < i + 9:
+            return False
+        ack = buf[i + 5]
+        ln = struct.unpack(">H", buf[i + 7:i + 9])[0]
+        fin = i + 9 + ln + 2
+        if len(buf) < fin:
+            return False
+        if ack == 0xDF:
+            i = fin
+            continue
+        return True
+    return False
+
+
 def txn(s, cmd, data=b"", dev=0, t=3):
     s.sendall(frame(cmd, data, dev)); s.settimeout(t); buf = b""
     try:
@@ -41,6 +70,7 @@ def txn(s, cmd, data=b"", dev=0, t=3):
             d = s.recv(8192)
             if not d: break
             buf += d
+            if _frame_listo(buf): break
     except socket.timeout:
         pass
     return buf
@@ -64,20 +94,47 @@ def decode(rec):
         workcode=int.from_bytes(rec[11:14], "big"),
     )
 
-def read_records(s, dev, batch=25):
+class LecturaIncompleta(RuntimeError):
+    """La descarga del buffer se corto a mitad. `parciales` es un PREFIJO."""
+
+    def __init__(self, parciales):
+        super().__init__(f"lectura truncada en {len(parciales)} registros")
+        self.parciales = parciales
+
+
+def read_records(s, dev, batch=25, *, reintentos_lote=4):
+    """Descarga el buffer entero. Devuelve la lista o levanta LecturaIncompleta.
+
+    Diferencia con la version original: un lote que NO contesta ya no corta la
+    descarga haciendola pasar por "fin del buffer". Se reintenta el lote (modo
+    0x00 = continuar) y, si insiste, se levanta LecturaIncompleta para que el
+    llamador sepa que lo que tiene es un prefijo. El "fin real" sigue siendo el
+    mismo de antes: un lote con menos de `batch` registros, o ret!=0/payload
+    vacio (el reloj avisando que no hay mas).
+    """
     out, modo = [], 0x01
+    fallos = 0
     while True:
         r = parse(txn(s, 0x40, bytes([modo, batch]), dev=dev))
-        if not r: break
+        if not r:
+            # timeout / basura: NO es fin de buffer, es un corte.
+            fallos += 1
+            if fallos > reintentos_lote:
+                raise LecturaIncompleta(out)
+            modo = 0x00
+            time.sleep(0.4 * fallos)
+            continue
         _, _, ret, pl = r
-        if ret != 0 or not pl: break
+        if ret != 0 or not pl:
+            return out
+        fallos = 0
         n = pl[0]
         for k in range(n):
             rec = pl[1 + k*14: 15 + k*14]
             if len(rec) == 14: out.append(decode(rec))
-        if n < batch: break
+        if n < batch:
+            return out
         modo = 0x00
-    return out
 
 # ---- integración con la app ----
 def _rec_key(r: dict) -> tuple:
@@ -110,6 +167,7 @@ def fetch_records(ip: str | None = None, port: int | None = None,
     dev_id: int | None = None
     merged: dict[tuple, dict] = {}
     estables = 0
+    alguna_completa = False
     fallos_seguidos = 0
     last: Exception | None = None
 
@@ -122,7 +180,12 @@ def fetch_records(ip: str | None = None, port: int | None = None,
                     raise RuntimeError("sin respuesta del reloj (cmd 0x30)")
                 dev = struct.unpack(">I", head[0])[0]
                 dev_id = dev
-                recs = read_records(s, dev)
+                try:
+                    recs = read_records(s, dev)
+                    completa = True
+                except LecturaIncompleta as inc:
+                    recs = inc.parciales
+                    completa = False
             finally:
                 try:
                     s.close()
@@ -148,18 +211,28 @@ def fetch_records(ip: str | None = None, port: int | None = None,
             if k not in merged:
                 merged[k] = r
                 nuevos += 1
-        log.info(f"anviz lectura {intento + 1}/{lecturas_max}: {len(recs)} leidos, "
-                 f"{nuevos} nuevos (acumulado {len(merged)})")
+        log.info(f"anviz lectura {intento + 1}/{lecturas_max}: {len(recs)} leidos "
+                 f"({'COMPLETA' if completa else 'TRUNCADA'}), {nuevos} nuevos "
+                 f"(acumulado {len(merged)})")
 
-        if nuevos == 0:
-            estables += 1
-            if estables >= lecturas_estables:
-                break
-        else:
-            estables = 0
+        if completa:
+            # Una lectura que llego al final del buffer es autoritativa:
+            # no tiene sentido seguir insistiendo.
+            alguna_completa = True
+            break
+
+        # OJO: una lectura TRUNCADA no cuenta como "estable". Dos cortes en el
+        # mismo punto devuelven el mismo prefijo y hacian creer que ya estaba
+        # todo descargado (era el bug que dejaba las fichadas nuevas afuera).
+        estables = 0
 
     if dev_id is None:
         raise RuntimeError(f"anviz inaccesible tras {retries} intentos: {last}") from last
+
+    if not alguna_completa:
+        log.warning(f"anviz: ninguna lectura llego al final del buffer en "
+                    f"{lecturas_max} intentos; devuelvo {len(merged)} registros "
+                    f"mergeados (pueden faltar las fichadas mas nuevas)")
 
     return dev_id, list(merged.values())
 
