@@ -1,6 +1,6 @@
 name: Deploy
 # Corre en el runner self-hosted instalado en el server 10.10.0.159.
-# El runner NO hace checkout: entra al clon de produccion (~/projects/hikvsion_get_events)
+# El runner NO hace checkout: entra al clon de produccion (~/projects/vicki_eventos)
 # y ejecuta deploy.sh, que hace fetch + reset --hard + docker compose up --build.
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:   # boton "Run workflow" en la pestania Actions
 
 concurrency:
-  group: deploy-hikvsion_get_events
+  group: deploy-vicki_eventos
   cancel-in-progress: false   # no cortar un build a la mitad
 
 jobs:
@@ -20,5 +20,5 @@ jobs:
     steps:
       - name: pull + build en el server
         run: |
-          cd ~/projects/hikvsion_get_events
+          cd ~/projects/vicki_eventos
           bash deploy.sh

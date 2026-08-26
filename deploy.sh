@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Deploy de hikvsion_get_events en el server (10.10.0.159).
+# Deploy de vicki_eventos en el server (10.10.0.159).
 # Lo usa el workflow de GitHub Actions (.github/workflows/deploy.yml)
-# y tambien sirve a mano:  ssh server -> cd ~/projects/hikvsion_get_events -> ./deploy.sh
+# y tambien sirve a mano:  ssh server -> cd ~/projects/vicki_eventos -> ./deploy.sh
 #
 # OJO: hace 'git reset --hard origin/main'. En el server NO se edita codigo,
 # asi que cualquier cambio local ahi es basura y se descarta a proposito.
