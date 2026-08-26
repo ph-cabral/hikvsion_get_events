@@ -11,7 +11,7 @@ ANVIZ_IP=10.10.0.147
 ANVIZ_PORT=5010
 ANVIZ_DEVICE=anviz
 ```
-
+ 
 ## Mapeo de usuarios
 El reloj identifica por su propio ID de usuario. Hay que vincularlo al legajo:
 ```bash
