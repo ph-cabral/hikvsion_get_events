@@ -17,7 +17,11 @@ from .config import ANVIZ_IP, ANVIZ_PORT, ANVIZ_DEVICE, CLASIF_CUTOFF_HOUR
 
 log = logging.getLogger("anviz")
 
-EPOCH = datetime(2000, 1, 1)
+# El contador de segundos del reloj esta 1 dia atrasado respecto del epoch
+# estandar Anviz (2000-01-01). Confirmado 2026-08-26 con diag_anviz_epoch:
+# crudo=840959840 -> 2026-08-25 07:57 con epoch 2000-01-01, cuando la fichada
+# real es del miercoles 2026-08-26 07:57. Compensa 2000-01-02.
+EPOCH = datetime(2000, 1, 2)
 BA = ZoneInfo("America/Argentina/Buenos_Aires")
 
 # ---- protocolo Anviz (verificado, sin cambios) ----
