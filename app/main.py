@@ -45,7 +45,7 @@ async def lifespan(_app: FastAPI):
     if os.getenv("ENABLE_SCHEDULER", "1") == "1":
         # 10 consultas por hora (~cada 6 min) de 7 a 19h. Antes eran 4/hora
         # (cada 15 min) 7-18h + 2 sueltas a las 19h; se unificó en un solo
-        # job con el mismo ritmo en todo el rango (2026-08-13, pedido de Pablo).
+        # job con el mismo ritmo en todo el rango (2026-08-13).
         scheduler.add_job(_poll_recent, "cron",
                           hour="7-19", minute="0,6,12,18,24,30,36,42,48,54",
                           id="poll_dia", max_instances=1, coalesce=True)
